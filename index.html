@@ -1318,6 +1318,276 @@ class Shade {
           game.audio.playDoorSlam();
         }
         return;
+      }
+    }
+
+    // Follow BFS path / direction to target
+    const target = game.swarm.getTargetPos(this.x, this.y);
+    if (!target) return;
+
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 0.05) return;
+
+    const stepDist = Math.min(dist, this.speed * dt);
+    const moveX = (dx / dist) * stepDist;
+    const moveY = (dy / dist) * stepDist;
+
+    // Check next tile for closed door or wall
+    const nextTileX = Math.floor(this.x + (dx / dist) * 0.4);
+    const nextTileY = Math.floor(this.y + (dy / dist) * 0.4);
+    const doorKey = nextTileX + ',' + nextTileY;
+    const door = game.doors.get(doorKey);
+
+    if (door && !door.open) {
+      this.bashingDoorKey = doorKey;
+      this.lastBashSound = 0.5;
+      return;
+    }
+
+    // Check if moving into an active safe room
+    if (game.isInsideActiveSaveRoom(nextTileX, nextTileY)) {
+      return; // Safe room boundary prevents shade intrusion!
+    }
+
+    // Normal movement with collision
+    const newX = this.x + moveX;
+    const newY = this.y + moveY;
+
+    if (game.canShadePass(newX, this.y)) {
+      this.x = newX;
+    }
+    if (game.canShadePass(this.x, newY)) {
+      this.y = newY;
+    }
+
+    // Check player catch
+    const pDist = Math.hypot(game.player.x - this.x, game.player.y - this.y);
+    if (pDist < 0.65) {
+      game.onPlayerCaught();
+    }
+  }
+}
+
+class SwarmAI {
+  constructor(game) {
+    this.game = game;
+    this.shades = [];
+    this.flowField = new Int16Array(MAP_SIZE * MAP_SIZE * 2); // dx, dy packed
+    this.flowTargetX = -1;
+    this.flowTargetY = -1;
+    this.flowUpdateTimer = 0;
+
+    this.lastLoudNoisePos = null;
+    this.lastLoudNoiseTime = 0;
+  }
+
+  spawnInitial(count) {
+    this.shades = [];
+    const rooms = this.game.mapData.rooms;
+    const spawnPos = this.game.mapData.spawnPos;
+
+    const farRooms = rooms.filter(r => {
+      const d = Math.hypot(r.cx - spawnPos.x, r.cy - spawnPos.y);
+      return d > 18;
+    });
+
+    for (let i = 0; i < count; i++) {
+      const r = farRooms[i % farRooms.length] || rooms[rooms.length - 1];
+      const sx = r.cx + (Math.random() - 0.5) * Math.max(1, r.w - 3);
+      const sy = r.cy + (Math.random() - 0.5) * Math.max(1, r.h - 3);
+      const shade = new Shade(sx, sy);
+      this.shades.push(shade);
+    }
+  }
+
+  escalate(relicCount) {
+    const extra = 3;
+    const rooms = this.game.mapData.rooms;
+    const p = this.game.player;
+
+    const farRooms = rooms.filter(r => Math.hypot(r.cx - p.x, r.cy - p.y) > 20);
+
+    for (let i = 0; i < extra; i++) {
+      const r = farRooms[i % farRooms.length] || rooms[0];
+      const shade = new Shade(r.cx + 0.5, r.cy + 0.5);
+      shade.speed = 1.9 + relicCount * 0.18;
+      this.shades.push(shade);
+    }
+
+    // Increase speed for existing shades
+    for (let i = 0; i < this.shades.length; i++) {
+      this.shades[i].speed = 1.9 + relicCount * 0.18;
+    }
+  }
+
+  notifyNoise(x, y, level) {
+    if (level >= 0.7) {
+      this.lastLoudNoisePos = { x, y };
+      this.lastLoudNoiseTime = performance.now();
+    }
+  }
+
+  update(dt) {
+    this.flowUpdateTimer += dt;
+    if (this.flowUpdateTimer > 0.3) {
+      this.flowUpdateTimer = 0;
+      this._computeFlowField();
+    }
+
+    const p = this.game.player;
+    const effRadius = p.lightRadius * p.flameIntensity;
+    const lookAngle = p.angle;
+    let nearestDist = 999;
+
+    for (let i = 0; i < this.shades.length; i++) {
+      const s = this.shades[i];
+      const dist = Math.hypot(s.x - p.x, s.y - p.y);
+      if (dist < nearestDist) nearestDist = dist;
+
+      // Freeze-in-Light check
+      if (dist < effRadius && !p.cupping) {
+        const angleToShade = Math.atan2(s.y - p.y, s.x - p.x);
+        let diffAngle = angleToShade - lookAngle;
+        while (diffAngle < -Math.PI) diffAngle += Math.PI * 2;
+        while (diffAngle > Math.PI) diffAngle -= Math.PI * 2;
+
+        const inFov = Math.abs(diffAngle) < (HALF_FOV + 0.25) || dist < 1.3;
+        if (inFov && this._hasLineOfSight(p.x, p.y, s.x, s.y)) {
+          s.frozen = true;
+        } else {
+          s.frozen = false;
+        }
+      } else {
+        s.frozen = false;
+      }
+
+      s.update(dt, this.game);
+    }
+
+    this.game.audio.updateShadeProximity(nearestDist);
+  }
+
+  _hasLineOfSight(x0, y0, x1, y1) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const dist = Math.hypot(dx, dy);
+    const steps = Math.ceil(dist * 3.5);
+    if (steps <= 0) return true;
+
+    for (let s = 1; s < steps; s++) {
+      const cx = Math.floor(x0 + (dx * s) / steps);
+      const cy = Math.floor(y0 + (dy * s) / steps);
+      if (cx < 0 || cx >= MAP_SIZE || cy < 0 || cy >= MAP_SIZE) return false;
+
+      const tile = this.game.mapGrid[cy * MAP_SIZE + cx];
+      if (tile === 0) return false;
+      if (tile === 2) {
+        const door = this.game.doors.get(cx + ',' + cy);
+        if (door && !door.open) return false;
+      }
+    }
+    return true;
+  }
+
+  _computeFlowField() {
+    let tx = Math.floor(this.game.player.x);
+    let ty = Math.floor(this.game.player.y);
+
+    // If player made a loud noise recently and is not sprinting now
+    if (this.lastLoudNoisePos && (performance.now() - this.lastLoudNoiseTime < 6000) && this.game.player.moveSpeed < 3) {
+      tx = Math.floor(this.lastLoudNoisePos.x);
+      ty = Math.floor(this.lastLoudNoisePos.y);
+    }
+
+    const sz = MAP_SIZE;
+    const distGrid = new Int16Array(sz * sz);
+    distGrid.fill(-1);
+
+    const q = [];
+    if (tx >= 0 && tx < sz && ty >= 0 && ty < sz) {
+      distGrid[ty * sz + tx] = 0;
+      q.push(tx, ty);
+    }
+
+    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+
+    let head = 0;
+    while (head < q.length) {
+      const cx = q[head++];
+      const cy = q[head++];
+      const curDist = distGrid[cy * sz + cx];
+
+      for (let d = 0; d < 4; d++) {
+        const nx = cx + dirs[d][0];
+        const ny = cy + dirs[d][1];
+        if (nx < 1 || nx >= sz - 1 || ny < 1 || ny >= sz - 1) continue;
+
+        const idx = ny * sz + nx;
+        if (distGrid[idx] !== -1) continue;
+
+        const tile = this.game.mapGrid[idx];
+        if (tile === 0) continue; // Wall
+
+        distGrid[idx] = curDist + 1;
+        q.push(nx, ny);
+      }
+    }
+
+    // Build flow directions
+    for (let y = 1; y < sz - 1; y++) {
+      for (let x = 1; x < sz - 1; x++) {
+        const idx = y * sz + x;
+        if (distGrid[idx] <= 0) {
+          this.flowField[idx * 2] = 0;
+          this.flowField[idx * 2 + 1] = 0;
+          continue;
+        }
+
+        let bestDist = distGrid[idx];
+        let bestDirX = 0, bestDirY = 0;
+
+        for (let d = 0; d < 4; d++) {
+          const nx = x + dirs[d][0];
+          const ny = y + dirs[d][1];
+          const nIdx = ny * sz + nx;
+          const nd = distGrid[nIdx];
+          if (nd !== -1 && nd < bestDist) {
+            bestDist = nd;
+            bestDirX = dirs[d][0];
+            bestDirY = dirs[d][1];
+          }
+        }
+
+        this.flowField[idx * 2] = bestDirX;
+        this.flowField[idx * 2 + 1] = bestDirY;
+      }
+    }
+  }
+
+  getTargetPos(shadeX, shadeY) {
+    const sx = Math.floor(shadeX);
+    const sy = Math.floor(shadeY);
+    if (sx < 1 || sx >= MAP_SIZE - 1 || sy < 1 || sy >= MAP_SIZE - 1) return null;
+
+    const idx = sy * MAP_SIZE + sx;
+    const dirX = this.flowField[idx * 2];
+    const dirY = this.flowField[idx * 2 + 1];
+
+    if (dirX === 0 && dirY === 0) {
+      return { x: this.game.player.x, y: this.game.player.y };
+    }
+
+    return {
+      x: sx + 0.5 + dirX * 0.7,
+      y: sy + 0.5 + dirY * 0.7,
+    };
+  }
+
+  pushBackNear(centerX, centerY, minRadius) {
+    const rooms = this.game.mapData.rooms;
 
 </script>
 </body>
