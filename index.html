@@ -106,6 +106,7 @@ min-width:52px;min-height:52px;padding:4px 10px;}
   <div class="menu-list">
     <button class="menu-btn" id="btnMenuContinue" disabled>Continue run</button>
     <button class="menu-btn" id="btnMenuNewGame">New game</button>
+    <button class="menu-btn" id="btnMenuHowToPlay">How to play & story</button>
     <button class="menu-btn" id="btnMenuSettings">Settings</button>
     <button class="menu-btn" id="btnMenuCredits">Credits</button>
     <button class="menu-btn" id="btnMenuTerms">Terms and conditions</button>
@@ -119,8 +120,45 @@ min-width:52px;min-height:52px;padding:4px 10px;}
   <div class="menu-list" style="margin-top:16px;">
     <button class="menu-btn" id="btnPauseResume">Resume</button>
     <button class="menu-btn" id="btnPauseJournal">Journal</button>
+    <button class="menu-btn" id="btnPauseHowToPlay">How to play & story</button>
     <button class="menu-btn" id="btnPauseSettings">Settings</button>
     <button class="menu-btn" id="btnPauseQuit">Quit to menu</button>
+  </div>
+</div>
+
+
+<!-- How to Play & Story Orientation Screen -->
+<div id="introPanel" class="overlay-screen">
+  <div class="panel-box" style="max-width:580px;">
+    <div class="panel-title">Survival orientation</div>
+    <div class="panel-content" style="gap:14px;">
+      <div>
+        <strong style="color:#ffd28a;">What is No pulse?</strong><br>
+        A first-person ASCII raycaster survival-horror experience. You are a dying, flickering flame navigating a massive abandoned hospital ward. You carry no weapons—only stealth, doors, and your light.
+      </div>
+      <div>
+        <strong style="color:#ffd28a;">The Narrative & Objective</strong><br>
+        Five Clinical Relics (<span style="color:#f5a642;">✦</span>) are scattered across the hospital wings. These relics are forgotten memories of your final night. Find all five to unlock the heavy steel Morgue Exit (<span style="color:#f5a642;">╬</span>) and discover what happened to you.
+      </div>
+      <div>
+        <strong style="color:#ffd28a;">Rules of Survival</strong>
+        <ul style="margin-left:18px;margin-top:6px;line-height:1.7;">
+          <li><strong>Light is your life:</strong> Fuel drains constantly. If your flame goes out, you flatline. Collect amber fuel canisters (<span style="color:#f5a642;">◈</span>) to restore light.</li>
+          <li><strong>Freeze-in-Light:</strong> The entities hunting you—the Shades (<span style="color:#7ad4ce;">/ \ | ! I Y</span>)—<strong>freeze dead in place</strong> when illuminated by your direct view cone. Looking away or cupping your flame lets them swarm again immediately.</li>
+          <li><strong>Noise attracts the swarm:</strong> Sprinting makes loud footstep spikes. Walking is quiet. Crouching is completely silent. Door slams alert the entire sector.</li>
+          <li><strong>Cup Flame (<kbd>Space</kbd> / Touch):</strong> Cuts light drain by 50% and muffles noise, but shrinks your vision to a tiny pinprick.</li>
+          <li><strong>Doors (<kbd>E</kbd> / Tap):</strong> Tap to open or slam shut. Hold <kbd>E</kbd> (1.2s) to bolt doors shut, holding shades back for 11 seconds.</li>
+          <li><strong>Sanctuaries (<span style="color:#f5a642;">+</span>):</strong> Save rooms restore checkpoints and shield you from the swarm, but have a <strong>25-second countdown timer</strong> before the boundary fails.</li>
+          <li><strong>Permadeath:</strong> You start with 3 lives. If all are lost, your saved run is wiped.</li>
+        </ul>
+      </div>
+      <div>
+        <strong style="color:#ffd28a;">Controls</strong><br>
+        <strong>Desktop:</strong> Mouse to look (click canvas for Pointer Lock), <kbd>WASD</kbd> to move, <kbd>Shift</kbd> to sprint, <kbd>Ctrl</kbd>/<kbd>C</kbd> to crouch, <kbd>Space</kbd> to cup flame, <kbd>E</kbd> to interact/bolt, <kbd>Esc</kbd> for Pause/Journal.<br>
+        <strong>Mobile:</strong> Floating virtual joystick on left, swipe look on right, action buttons on edges.
+      </div>
+    </div>
+    <button class="menu-btn" id="btnIntroDismiss" style="align-self:center;margin-top:8px;min-width:220px;color:#ffd28a;border-color:#b8611c;">Enter the darkness</button>
   </div>
 </div>
 
@@ -2235,6 +2273,12 @@ class Game {
     // Initialize map for living menu background
     this._initNewGame(true);
 
+    // First startup check: show how to play & story
+    const hasSeenIntro = this.storage.load('nopulse_seen_intro');
+    if (!hasSeenIntro) {
+      this._openIntro('menu');
+    }
+
     this._loop = this._loop.bind(this);
     requestAnimationFrame(this._loop);
   }
@@ -2256,6 +2300,13 @@ class Game {
     });
 
     document.getElementById('btnMenuSettings').addEventListener('click', () => self._openSettings('menu'));
+    document.getElementById('btnMenuHowToPlay').addEventListener('click', () => self._openIntro('menu'));
+    document.getElementById('btnPauseHowToPlay').addEventListener('click', () => self._openIntro('paused'));
+    document.getElementById('btnIntroDismiss').addEventListener('click', () => {
+      self.storage.save('nopulse_seen_intro', true);
+      self._openScreen(self._introReturnState === 'menu' ? 'mainMenu' : 'pauseMenu');
+      self.state = self._introReturnState;
+    });
     document.getElementById('btnMenuCredits').addEventListener('click', () => self._openScreen('creditsPanel'));
     document.getElementById('btnMenuTerms').addEventListener('click', () => self._openScreen('termsPanel'));
 
@@ -2337,9 +2388,10 @@ class Game {
           self._pauseGame();
         } else if (self.state === 'paused') {
           self._resumeGame();
-        } else if (self.state === 'journal' || self.state === 'settings' || self.state === 'credits' || self.state === 'terms') {
-          self._openScreen(self._settingsReturnState === 'menu' ? 'mainMenu' : 'pauseMenu');
-          self.state = self._settingsReturnState;
+        } else if (self.state === 'journal' || self.state === 'settings' || self.state === 'credits' || self.state === 'terms' || self.state === 'intro') {
+          const ret = self.state === 'intro' ? self._introReturnState : self._settingsReturnState;
+          self._openScreen(ret === 'menu' ? 'mainMenu' : 'pauseMenu');
+          self.state = ret;
         }
       }
     });
@@ -2388,7 +2440,7 @@ class Game {
   }
 
   _openScreen(screenId) {
-    const screens = ['mainMenu', 'pauseMenu', 'journalPanel', 'settingsPanel', 'creditsPanel', 'termsPanel', 'deathScreen', 'endingScreen'];
+    const screens = ['mainMenu', 'pauseMenu', 'introPanel', 'journalPanel', 'settingsPanel', 'creditsPanel', 'termsPanel', 'deathScreen', 'endingScreen'];
     screens.forEach(id => {
       const el = document.getElementById(id);
       if (el) el.classList.remove('active');
@@ -2397,6 +2449,12 @@ class Game {
       const target = document.getElementById(screenId);
       if (target) target.classList.add('active');
     }
+  }
+
+  _openIntro(returnState) {
+    this._introReturnState = returnState || 'menu';
+    this.state = 'intro';
+    this._openScreen('introPanel');
   }
 
   _openSettings(returnState) {
