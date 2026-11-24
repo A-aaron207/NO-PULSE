@@ -1588,6 +1588,276 @@ class SwarmAI {
 
   pushBackNear(centerX, centerY, minRadius) {
     const rooms = this.game.mapData.rooms;
+    for (let i = 0; i < this.shades.length; i++) {
+      const s = this.shades[i];
+      const dist = Math.hypot(s.x - centerX, s.y - centerY);
+      if (dist < minRadius) {
+        const farRooms = rooms.filter(r => Math.hypot(r.cx - centerX, r.cy - centerY) > minRadius + 8);
+        const r = farRooms[i % farRooms.length] || rooms[0];
+        s.x = r.cx + 0.5;
+        s.y = r.cy + 0.5;
+        s.frozen = false;
+        s.bashingDoorKey = null;
+      }
+    }
+  }
+}
+
+/* ============================================================
+   DIFFICULTY CONFIGURATIONS
+   ============================================================ */
+
+const DIFFICULTY_SETTINGS = {
+  easy: {
+    name: 'Easy',
+    drainMult: 0.65,
+    shadeSpeedMult: 0.8,
+    saveRoomTime: 35.0,
+    lives: 4,
+    lightBonus: 2.5,
+  },
+  normal: {
+    name: 'Normal',
+    drainMult: 1.0,
+    shadeSpeedMult: 1.0,
+    saveRoomTime: 25.0,
+    lives: 3,
+    lightBonus: 0.0,
+  },
+  nightmare: {
+    name: 'Nightmare',
+    drainMult: 1.4,
+    shadeSpeedMult: 1.25,
+    saveRoomTime: 15.0,
+    lives: 2,
+    lightBonus: -1.5,
+  }
+};
+
+/* ============================================================
+   RAYCASTER ENGINE + SPRITE RENDERER (Enhanced Visibility)
+   ============================================================ */
+
+class Raycaster {
+  constructor(atlas, gridW, gridH) {
+    this.atlas = atlas;
+    this.gridW = gridW;
+    this.gridH = gridH;
+    this.zBuffer = new Float64Array(gridW);
+    this.cellW = atlas.cellW;
+    this.cellH = atlas.cellH;
+  }
+
+  render(ctx, mapGrid, mapSize, doors, playerX, playerY, playerAngle, lightRadius, flameIntensity) {
+    const gw = this.gridW;
+    const gh = this.gridH;
+    const cw = this.cellW;
+    const ch = this.cellH;
+    const atlas = this.atlas;
+
+    // Enhanced effective light radius
+    const effectiveLightR = Math.max(3.5, lightRadius * flameIntensity);
+
+    for (let col = 0; col < gw; col++) {
+      const rayAngle = playerAngle - HALF_FOV + (col / gw) * FOV;
+      const rayDirX = Math.cos(rayAngle);
+      const rayDirY = Math.sin(rayAngle);
+
+      let mapX = Math.floor(playerX);
+      let mapY = Math.floor(playerY);
+
+      const deltaDistX = Math.abs(1.0 / rayDirX);
+      const deltaDistY = Math.abs(1.0 / rayDirY);
+
+      let stepX, stepY;
+      let sideDistX, sideDistY;
+
+      if (rayDirX < 0) {
+        stepX = -1;
+        sideDistX = (playerX - mapX) * deltaDistX;
+      } else {
+        stepX = 1;
+        sideDistX = (mapX + 1.0 - playerX) * deltaDistX;
+      }
+      if (rayDirY < 0) {
+        stepY = -1;
+        sideDistY = (playerY - mapY) * deltaDistY;
+      } else {
+        stepY = 1;
+        sideDistY = (mapY + 1.0 - playerY) * deltaDistY;
+      }
+
+      let hit = false;
+      let side = 0;
+      let tileType = 0;
+      let maxSteps = 80;
+
+      while (!hit && maxSteps-- > 0) {
+        if (sideDistX < sideDistY) {
+          sideDistX += deltaDistX;
+          mapX += stepX;
+          side = 0;
+        } else {
+          sideDistY += deltaDistY;
+          mapY += stepY;
+          side = 1;
+        }
+
+        if (mapX < 0 || mapX >= mapSize || mapY < 0 || mapY >= mapSize) {
+          hit = true;
+          tileType = 0;
+          break;
+        }
+
+        const tile = mapGrid[mapY * mapSize + mapX];
+        if (tile === 0) {
+          hit = true;
+          tileType = 0;
+        } else if (tile === 2) {
+          const doorKey = mapX + ',' + mapY;
+          const doorState = doors.get(doorKey);
+          if (!doorState || !doorState.open) {
+            hit = true;
+            tileType = 2;
+          }
+        }
+      }
+
+      let perpDist;
+      if (side === 0) {
+        perpDist = (mapX - playerX + (1 - stepX) / 2) / rayDirX;
+      } else {
+        perpDist = (mapY - playerY + (1 - stepY) / 2) / rayDirY;
+      }
+      if (perpDist < 0.01) perpDist = 0.01;
+
+      this.zBuffer[col] = perpDist;
+
+      const cosCorrect = Math.cos(rayAngle - playerAngle);
+      const correctedDist = perpDist * cosCorrect;
+
+      const lineHeight = Math.floor(gh / correctedDist);
+      const wallTop = Math.max(0, Math.floor(-lineHeight / 2 + gh / 2));
+      const wallBot = Math.min(gh - 1, Math.floor(lineHeight / 2 + gh / 2));
+
+      const wallGlyphs = tileType === 2 ? DOOR_GLYPHS : WALL_GLYPHS;
+      const glyphHash = Math.abs((mapX * 31 + mapY * 17 + side * 7) | 0);
+      const wallGlyph = wallGlyphs[glyphHash % wallGlyphs.length];
+
+      const destX = col * cw;
+
+      for (let row = 0; row < gh; row++) {
+        let glyph, colorIdx, distEst;
+
+        if (row < wallTop) {
+          // Ceiling
+          const rowDist = (gh / 2) / (gh / 2 - row);
+          distEst = rowDist / cosCorrect;
+          glyph = BRIGHTNESS_RAMP[Math.min(BRIGHTNESS_RAMP.length - 1, Math.floor((row / wallTop) * 3))];
+          colorIdx = COLOR_INDICES.bone;
+        } else if (row > wallBot) {
+          // Floor
+          const rowDist = (gh / 2) / (row - gh / 2);
+          distEst = rowDist / cosCorrect;
+          const floorHash = Math.abs((col * 13 + row * 29) | 0);
+          glyph = FLOOR_GLYPHS[floorHash % FLOOR_GLYPHS.length];
+          colorIdx = COLOR_INDICES.bone;
+        } else {
+          // Wall
+          distEst = perpDist;
+          glyph = wallGlyph;
+          colorIdx = tileType === 2 ? COLOR_INDICES.amber : COLOR_INDICES.bone;
+        }
+
+        const destY = row * ch;
+
+        // Enhanced visibility formula (smooth inverse-falloff with ambient reach)
+        let brightness = Math.max(0, 1.0 - Math.pow(distEst / effectiveLightR, 1.15));
+
+        if (row >= wallTop && row <= wallBot && side === 1) {
+          brightness *= 0.75; // Subtle side shadow
+        }
+
+        // Bayer dithering to eliminate harsh banding
+        brightness += (BAYER_4x4[row & 3][col & 3] - 0.5) * 0.14;
+        brightness = Math.max(0, Math.min(1, brightness));
+
+        if (brightness < 0.015) continue;
+
+        atlas.stamp(ctx, destX, destY, glyph, colorIdx, brightness);
+      }
+    }
+  }
+
+  renderSprites(ctx, sprites, playerX, playerY, playerAngle, lightRadius, flameIntensity) {
+    const gw = this.gridW;
+    const gh = this.gridH;
+    const cw = this.cellW;
+    const ch = this.cellH;
+    const atlas = this.atlas;
+
+    const effectiveLightR = Math.max(3.5, lightRadius * flameIntensity);
+
+    const visible = [];
+    for (let i = 0; i < sprites.length; i++) {
+      const sp = sprites[i];
+      if (sp.collected) continue;
+      const dx = sp.x - playerX;
+      const dy = sp.y - playerY;
+      const dist = Math.hypot(dx, dy);
+
+      // Shades can have faint glint slightly beyond normal vision
+      const maxVis = sp.type === 'shade' ? effectiveLightR + 2.5 : effectiveLightR + 1.0;
+      if (dist > maxVis) continue;
+      visible.push({ sprite: sp, dist: dist, dx: dx, dy: dy });
+    }
+
+    visible.sort((a, b) => b.dist - a.dist);
+
+    const dirX = Math.cos(playerAngle);
+    const dirY = Math.sin(playerAngle);
+    const planeX = -Math.sin(playerAngle) * Math.tan(HALF_FOV);
+    const planeY = Math.cos(playerAngle) * Math.tan(HALF_FOV);
+
+    for (let i = 0; i < visible.length; i++) {
+      const v = visible[i];
+      const sp = v.sprite;
+
+      const invDet = 1.0 / (planeX * dirY - dirX * planeY);
+      const transformX = invDet * (dirY * v.dx - dirX * v.dy);
+      const transformY = invDet * (-planeY * v.dx + planeX * v.dy);
+
+      if (transformY <= 0.1) continue;
+
+      const screenX = Math.floor((gw / 2) * (1 + transformX / transformY));
+      const spriteHeight = Math.floor(gh / transformY);
+      const spriteWidth = spriteHeight;
+
+      const drawStartY = Math.max(0, Math.floor(-spriteHeight / 2 + gh / 2));
+      const drawEndY = Math.min(gh - 1, Math.floor(spriteHeight / 2 + gh / 2));
+      const drawStartX = Math.max(0, screenX - Math.floor(spriteWidth / 2));
+      const drawEndX = Math.min(gw - 1, screenX + Math.floor(spriteWidth / 2));
+
+      let brightness = Math.max(0, 1.0 - Math.pow(v.dist / effectiveLightR, 1.2));
+      if (sp.type === 'shade') {
+        // Teal glint visible at edge of darkness
+        brightness = Math.max(0.12, brightness * 1.1);
+      }
+
+      if (brightness < 0.02) continue;
+
+      const glyph = sp.glyph || '✦';
+      const colorIdx = sp.colorIdx !== undefined ? sp.colorIdx : COLOR_INDICES.amber;
+
+      const midCol = Math.floor((drawStartX + drawEndX) / 2);
+      const midRow = Math.floor((drawStartY + drawEndY) / 2);
+
+      const renderCols = Math.min(3, drawEndX - drawStartX + 1);
+      const renderRows = Math.min(3, drawEndY - drawStartY + 1);
+      const startC = midCol - Math.floor(renderCols / 2);
+      const startR = midRow - Math.floor(renderRows / 2);
+
+      for (let r = 0; r < renderRows; r++) {
 
 </script>
 </body>
