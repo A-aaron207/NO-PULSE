@@ -2658,6 +2658,276 @@ class Game {
 
     // Flame Flicker Animation (Strictly the only non-reactive animation)
     const t = this.lastTime / 1000;
+    p.flameIntensity = 0.7 + 0.15 * Math.sin(t * 8.7) + 0.08 * Math.sin(t * 13.1 + 1.3) + 0.07 * Math.sin(t * 23.5 + 2.7);
+
+    // Light drain & fuel calculation
+    let drainRate = LIGHT_DRAIN_BASE;
+    if (sprinting) drainRate = LIGHT_DRAIN_SPRINT;
+    if (p.cupping) drainRate = LIGHT_DRAIN_CUP;
+
+    p.fuel -= drainRate * diffCfg.drainMult * dt;
+    if (p.fuel <= 0) {
+      p.fuel = 0;
+      this._onLightDied();
+      return;
+    }
+
+    // Base light radius with enhanced visibility
+    p.lightRadius = (3.5 + diffCfg.lightBonus) + p.fuel * 7.5;
+    if (p.cupping) {
+      p.lightRadius *= 0.28; // Tiny pinprick when cupping
+    }
+
+    // Noise level
+    if (p.moveSpeed === 0) p.noise = Math.max(0, p.noise - dt * 2.0);
+    else if (p.moveSpeed === 1) p.noise = 0.04;
+    else if (p.moveSpeed === 2) p.noise = 0.28;
+    else p.noise = 0.85;
+
+    // Heartbeat audio when noise is high, light is low, or shades close
+    if (p.fuel < 0.25 || p.noise > 0.6) {
+      if (Math.random() < 0.03) this.audio.playHeartbeat(1.0);
+    }
+
+    // Door interact & bolting logic
+    this._updateDoorInteractions(dt);
+
+    // Update Swarm AI
+    this.swarm.update(dt);
+
+    // Check Save Room Timers
+    this._updateSaveRooms(dt);
+
+    // Check item pickups
+    this._checkPickups();
+
+    // Check Exit Trigger
+    this._checkExitCondition();
+
+    // Update Glitch Flash Overlay
+    if (this.glitchTimer > 0) {
+      this.glitchTimer -= dt;
+      if (this.glitchTimer <= 0) {
+        document.getElementById('glitchOverlay').classList.remove('active');
+        this.currentGlitch = null;
+      }
+    }
+  }
+
+  _movePlayer(dx, dy) {
+    const p = this.player;
+    const r = PLAYER_RADIUS;
+
+    const newX = p.x + dx;
+    if (this._canWalk(newX, p.y, r)) p.x = newX;
+
+    const newY = p.y + dy;
+    if (this._canWalk(p.x, newY, r)) p.y = newY;
+  }
+
+  _canWalk(x, y, r) {
+    const checks = [
+      [x - r, y - r], [x + r, y - r],
+      [x - r, y + r], [x + r, y + r],
+      [x, y],
+    ];
+    for (let i = 0; i < checks.length; i++) {
+      const cx = Math.floor(checks[i][0]);
+      const cy = Math.floor(checks[i][1]);
+      if (cx < 0 || cx >= MAP_SIZE || cy < 0 || cy >= MAP_SIZE) return false;
+      const tile = this.mapGrid[cy * MAP_SIZE + cx];
+      if (tile === 0) return false;
+      if (tile === 2) {
+        const door = this.doors.get(cx + ',' + cy);
+        if (door && !door.open) return false;
+      }
+    }
+    return true;
+  }
+
+  canShadePass(x, y) {
+    const cx = Math.floor(x);
+    const cy = Math.floor(y);
+    if (cx < 0 || cx >= MAP_SIZE || cy < 0 || cy >= MAP_SIZE) return false;
+    const tile = this.mapGrid[cy * MAP_SIZE + cx];
+    if (tile === 0) return false;
+    if (tile === 2) {
+      const door = this.doors.get(cx + ',' + cy);
+      if (door && !door.open) return false;
+    }
+    return true;
+  }
+
+  _updateDoorInteractions(dt) {
+    const p = this.player;
+    const lookX = Math.cos(p.angle);
+    const lookY = Math.sin(p.angle);
+
+    let facingDoorKey = null;
+    const steps = 6;
+    for (let s = 1; s <= steps; s++) {
+      const tx = Math.floor(p.x + lookX * (1.6 * s / steps));
+      const ty = Math.floor(p.y + lookY * (1.6 * s / steps));
+      if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) continue;
+      if (this.mapGrid[ty * MAP_SIZE + tx] === 2) {
+        facingDoorKey = tx + ',' + ty;
+        break;
+      }
+    }
+
+    this.targetedDoorKey = facingDoorKey;
+    const isHolding = this.input.isHoldingInteract();
+
+    if (facingDoorKey) {
+      const door = this.doors.get(facingDoorKey);
+      if (door) {
+        if (isHolding) {
+          this.interactHoldTimer += dt;
+          if (!door.open && !door.bolted && this.interactHoldTimer >= DOOR_BOLT_TIME) {
+            door.bolted = true;
+            this.interactHoldTimer = 0;
+            this.audio.playDoorBolt();
+            this.hudMessage = 'Door bolted shut';
+            this.hudMessageTimer = 2.0;
+          }
+        } else {
+          // If was held briefly (< DOOR_BOLT_TIME) and released: toggle open/slam
+          if (this.interactHoldTimer > 0.05 && this.interactHoldTimer < DOOR_BOLT_TIME) {
+            door.open = !door.open;
+            door.bolted = false;
+            door.bashTimer = 0;
+            if (!door.open) {
+              // Slamming creates loud noise spike
+              p.noise = 1.0;
+              this.swarm.notifyNoise(p.x, p.y, 1.0);
+              this.audio.playDoorSlam();
+              this.hudMessage = 'Door slammed shut';
+            } else {
+              this.audio.playDoorCreak();
+              this.hudMessage = 'Door opened';
+            }
+            this.hudMessageTimer = 1.8;
+          }
+          this.interactHoldTimer = 0;
+        }
+      }
+    } else {
+      this.interactHoldTimer = 0;
+    }
+
+    if (this.hudMessageTimer > 0) {
+      this.hudMessageTimer -= dt;
+      if (this.hudMessageTimer <= 0) this.hudMessage = '';
+    }
+  }
+
+  _updateSaveRooms(dt) {
+    const p = this.player;
+    const px = Math.floor(p.x);
+    const py = Math.floor(p.y);
+    const diffCfg = DIFFICULTY_SETTINGS[this.difficulty] || DIFFICULTY_SETTINGS.normal;
+
+    let inRoom = null;
+    for (let i = 0; i < this.mapData.saveRooms.length; i++) {
+      const sr = this.mapData.saveRooms[i];
+      const r = sr.room;
+      if (r && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) {
+        inRoom = sr;
+        break;
+      }
+    }
+
+    if (inRoom) {
+      if (this.activeSaveRoom !== inRoom) {
+        this.activeSaveRoom = inRoom;
+        this.saveRoomTimer = diffCfg.saveRoomTime;
+        this.lastVisitedSavePos = { x: inRoom.x, y: inRoom.y };
+        this.audio.playSaveChime();
+        this._saveGame();
+        this.hudMessage = 'Safe zone reached · Checkpoint saved';
+        this.hudMessageTimer = 3.0;
+      } else {
+        if (this.saveRoomTimer > 0) {
+          this.saveRoomTimer -= dt;
+          if (this.saveRoomTimer <= 0) {
+            this.saveRoomTimer = 0;
+            this.audio.playBreachAlarm();
+            this.hudMessage = 'Sanctuary breached! The swarm is entering!';
+            this.hudMessageTimer = 4.0;
+          }
+        }
+      }
+    } else {
+      this.activeSaveRoom = null;
+      this.saveRoomTimer = 0;
+    }
+  }
+
+  isInsideActiveSaveRoom(tileX, tileY) {
+    if (!this.activeSaveRoom || this.saveRoomTimer <= 0) return false;
+    const r = this.activeSaveRoom.room;
+    return r && tileX >= r.x && tileX < r.x + r.w && tileY >= r.y && tileY < r.y + r.h;
+  }
+
+  _checkPickups() {
+    const p = this.player;
+    for (let i = 0; i < this.sprites.length; i++) {
+      const sp = this.sprites[i];
+      if (sp.collected) continue;
+
+      const dist = Math.hypot(p.x - sp.x, p.y - sp.y);
+      if (dist < 0.85) {
+        if (sp.type === 'relic') {
+          sp.collected = true;
+          this.mapData.relics[sp.id].collected = true;
+          p.relicsCollected++;
+          if (!p.unlockedRelics.includes(sp.id)) {
+            p.unlockedRelics.push(sp.id);
+          }
+          this.audio.playRelicChime();
+          this._triggerGlitchFlash(sp.id);
+          this.swarm.escalate(p.relicsCollected);
+          this._saveGame();
+        } else if (sp.type === 'fuel') {
+          sp.collected = true;
+          this.mapData.fuelPickups[sp.id].collected = true;
+          p.fuel = Math.min(1.0, p.fuel + FUEL_RESTORE);
+          this.hudMessage = 'Fuel restored';
+          this.hudMessageTimer = 1.5;
+        }
+      }
+    }
+  }
+
+  _triggerGlitchFlash(relicId) {
+    const data = RELIC_DATA[relicId];
+    if (!data) return;
+
+    this.currentGlitch = data;
+    this.glitchTimer = 2.0;
+
+    const overlay = document.getElementById('glitchOverlay');
+    const art = document.getElementById('glitchArt');
+    const text = document.getElementById('glitchText');
+
+    art.textContent = data.art.replace(/\\n/g, '\n');
+    text.textContent = data.glitchLine;
+    overlay.classList.add('active');
+  }
+
+  _checkExitCondition() {
+    const p = this.player;
+    if (p.relicsCollected >= 5 && this.mapData.exitPos) {
+      const d = Math.hypot(p.x - this.mapData.exitPos.x, p.y - this.mapData.exitPos.y);
+      if (d < 1.4) {
+        this._triggerTwistEnding();
+      }
+    }
+  }
+
+  onPlayerCaught() {
+    this._loseLife('A shade engulfed your dying light.');
+  }
 
 </script>
 </body>
