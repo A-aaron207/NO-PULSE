@@ -1048,6 +1048,276 @@ class HospitalGenerator {
             this.grid[this._idx(nx, ny)] = 1;
           }
         }
+      }
+    };
+
+    if (Math.random() < 0.5) {
+      const startX = Math.min(x1, x2);
+      const endX = Math.max(x1, x2);
+      for (let x = startX; x <= endX; x++) carve(x, y1);
+      const startY = Math.min(y1, y2);
+      const endY = Math.max(y1, y2);
+      for (let y = startY; y <= endY; y++) carve(x2, y);
+    } else {
+      const startY = Math.min(y1, y2);
+      const endY = Math.max(y1, y2);
+      for (let y = startY; y <= endY; y++) carve(x1, y);
+      const startX = Math.min(x1, x2);
+      const endX = Math.max(x1, x2);
+      for (let x = startX; x <= endX; x++) carve(x, y2);
+    }
+  }
+
+  _addExtraConnections() {
+    const count = Math.floor(this.rooms.length * 0.35);
+    for (let k = 0; k < count; k++) {
+      const i = this._rng(0, this.rooms.length - 1);
+      let j = this._rng(0, this.rooms.length - 1);
+      if (i === j) j = (j + 1) % this.rooms.length;
+      this._carveCorridor(this.rooms[i].cx, this.rooms[i].cy, this.rooms[j].cx, this.rooms[j].cy);
+    }
+  }
+
+  _placeDoors() {
+    const sz = this.size;
+    for (let y = 2; y < sz - 2; y++) {
+      for (let x = 2; x < sz - 2; x++) {
+        if (this.grid[this._idx(x, y)] !== 1) continue;
+
+        const n = this.grid[this._idx(x, y - 1)];
+        const s = this.grid[this._idx(x, y + 1)];
+        const w = this.grid[this._idx(x - 1, y)];
+        const e = this.grid[this._idx(x + 1, y)];
+
+        const vertPassage = (n === 1 && s === 1 && w === 0 && e === 0);
+        const horizPassage = (w === 1 && e === 1 && n === 0 && s === 0);
+
+        if (vertPassage || horizPassage) {
+          if (Math.random() < 0.45) {
+            this.grid[this._idx(x, y)] = 2;
+            this.doors.set(x + ',' + y, {
+              open: false,
+              bolted: false,
+              health: 100,
+              bashTimer: 0,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  _assignSpecialRooms() {
+    const shuffled = this.rooms.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = shuffled[i];
+      shuffled[i] = shuffled[j];
+      shuffled[j] = tmp;
+    }
+
+    while (shuffled.length < 11) {
+      const extra = {
+        x: shuffled[0].x, y: shuffled[0].y,
+        w: shuffled[0].w, h: shuffled[0].h,
+        cx: shuffled[0].cx, cy: shuffled[0].cy,
+      };
+      shuffled.push(extra);
+    }
+
+    const spawnRoom = shuffled[0];
+    this.spawnPos = { x: spawnRoom.cx + 0.5, y: spawnRoom.cy + 0.5 };
+
+    this.relics = [];
+    for (let i = 1; i <= 5; i++) {
+      const r = shuffled[i];
+      this.relics.push({
+        x: r.cx + 0.5,
+        y: r.cy + 0.5,
+        id: i - 1,
+        collected: false,
+      });
+    }
+
+    this.saveRooms = [];
+    for (let i = 6; i <= 9; i++) {
+      const r = shuffled[i];
+      this.saveRooms.push({
+        x: r.cx + 0.5,
+        y: r.cy + 0.5,
+        room: r,
+        roomIdx: i,
+        visited: false,
+      });
+    }
+
+    const exitRoom = shuffled[10];
+    this.exitPos = {
+      x: exitRoom.cx + 0.5,
+      y: exitRoom.cy + 0.5,
+      locked: true,
+    };
+  }
+
+  _scatterFuel() {
+    this.fuelPickups = [];
+    const floorTiles = [];
+    for (let y = 1; y < this.size - 1; y++) {
+      for (let x = 1; x < this.size - 1; x++) {
+        if (this.grid[this._idx(x, y)] === 1) {
+          floorTiles.push({ x: x, y: y });
+        }
+      }
+    }
+
+    for (let i = floorTiles.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = floorTiles[i];
+      floorTiles[i] = floorTiles[j];
+      floorTiles[j] = tmp;
+    }
+
+    const count = this._rng(10, 14);
+    for (let i = 0; i < count && i < floorTiles.length; i++) {
+      const tile = floorTiles[i];
+      let tooClose = false;
+      for (let r = 0; r < this.relics.length; r++) {
+        const dx = tile.x + 0.5 - this.relics[r].x;
+        const dy = tile.y + 0.5 - this.relics[r].y;
+        if (dx * dx + dy * dy < 4) { tooClose = true; break; }
+      }
+      if (!tooClose) {
+        this.fuelPickups.push({
+          x: tile.x + 0.5,
+          y: tile.y + 0.5,
+          collected: false,
+        });
+      }
+    }
+  }
+
+  _ensureConnectivity() {
+    const sz = this.size;
+    const visited = new Uint8Array(sz * sz);
+    const queue = [];
+
+    let startX = -1, startY = -1;
+    for (let y = 1; y < sz - 1; y++) {
+      for (let x = 1; x < sz - 1; x++) {
+        if (this.grid[this._idx(x, y)] === 1) {
+          startX = x; startY = y; break;
+        }
+      }
+      if (startX !== -1) break;
+    }
+    if (startX === -1) return;
+
+    visited[this._idx(startX, startY)] = 1;
+    queue.push(startX, startY);
+
+    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+
+    while (queue.length > 0) {
+      const qy = queue.pop();
+      const qx = queue.pop();
+
+      for (let d = 0; d < 4; d++) {
+        const nx = qx + dirs[d][0];
+        const ny = qy + dirs[d][1];
+        if (nx < 1 || nx >= sz - 1 || ny < 1 || ny >= sz - 1) continue;
+
+        const idx = this._idx(nx, ny);
+        if (this.grid[idx] === 0) continue;
+        if (visited[idx] === 0) {
+          visited[idx] = 1;
+          queue.push(nx, ny);
+        }
+      }
+    }
+
+    for (let y = 1; y < sz - 1; y++) {
+      for (let x = 1; x < sz - 1; x++) {
+        const idx = this._idx(x, y);
+        if (this.grid[idx] > 0 && visited[idx] === 0) {
+          let found = false;
+          for (let d = 0; d < 4; d++) {
+            const nx = x + dirs[d][0];
+            const ny = y + dirs[d][1];
+            if (nx < 1 || nx >= sz - 1 || ny < 1 || ny >= sz - 1) continue;
+            if (this.grid[this._idx(nx, ny)] === 0) continue;
+            if (visited[this._idx(nx, ny)] === 1) {
+              visited[idx] = 1;
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            this.grid[idx] = 0;
+            this.doors.delete(x + ',' + y);
+          }
+        }
+      }
+    }
+  }
+}
+
+/* ============================================================
+   SWARM AI & SHADES (Noise-Driven & Freeze-in-Light)
+   ============================================================ */
+
+class Shade {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.speed = 1.9; // tiles per second
+    this.frozen = false;
+    this.glyph = '/';
+    this.glyphTimer = 0;
+    this.glyphIdx = 0;
+    this.colorIdx = COLOR_INDICES.teal; // Strict Drowned Teal
+    this.type = 'shade';
+
+    this.bashingDoorKey = null;
+    this.bashProgress = 0;
+    this.lastBashSound = 0;
+  }
+
+  update(dt, game) {
+    this.glyphTimer += dt;
+    if (this.glyphTimer > 0.08) {
+      this.glyphTimer = 0;
+      this.glyphIdx = (this.glyphIdx + 1) % SHADE_GLYPHS.length;
+      this.glyph = SHADE_GLYPHS[this.glyphIdx];
+    }
+
+    if (this.frozen) {
+      this.bashingDoorKey = null;
+      return;
+    }
+
+    // If currently bashing a door
+    if (this.bashingDoorKey) {
+      const door = game.doors.get(this.bashingDoorKey);
+      if (!door || door.open) {
+        this.bashingDoorKey = null;
+      } else {
+        const bashLimit = door.bolted ? BOLT_BASH_TIME : DOOR_BASH_TIME;
+        door.bashTimer += dt;
+
+        this.lastBashSound += dt;
+        if (this.lastBashSound > 0.55) {
+          this.lastBashSound = 0;
+          game.audio.playDoorBash();
+        }
+
+        if (door.bashTimer >= bashLimit) {
+          door.open = true;
+          door.bolted = false;
+          door.bashTimer = 0;
+          this.bashingDoorKey = null;
+          game.audio.playDoorSlam();
+        }
+        return;
 
 </script>
 </body>
