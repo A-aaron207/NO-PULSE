@@ -2399,6 +2399,266 @@ class Game {
     this.difficulty = save.difficulty || 'normal';
     this._initNewGame(false);
 
+    // Restore player state
+    this.player.x = save.x;
+    this.player.y = save.y;
+    this.player.angle = save.angle;
+    this.player.lives = save.lives;
+    this.player.fuel = save.fuel;
+    this.player.relicsCollected = save.relicsCollected;
+    this.player.unlockedRelics = save.unlockedRelics || [];
+
+    // Restore relics
+    if (save.relicsState) {
+      for (let i = 0; i < this.mapData.relics.length; i++) {
+        if (save.relicsState[i]) {
+          this.mapData.relics[i].collected = true;
+        }
+      }
+    }
+
+    this.state = 'playing';
+    this._openScreen(null);
+    this._updateTouchUIState();
+    if (PlatformDetector.isDesktop()) {
+      this.canvas.requestPointerLock();
+    }
+  }
+
+  _saveGame() {
+    if (!this.player || this.player.lives <= 0) return;
+    const data = {
+      x: this.player.x,
+      y: this.player.y,
+      angle: this.player.angle,
+      lives: this.player.lives,
+      fuel: this.player.fuel,
+      relicsCollected: this.player.relicsCollected,
+      unlockedRelics: this.player.unlockedRelics,
+      relicsState: this.mapData.relics.map(r => r.collected),
+      difficulty: this.difficulty,
+    };
+    this.storage.save('nopulse_save', data);
+    this._checkSavedGame();
+  }
+
+  _pauseGame() {
+    this.state = 'paused';
+    this._openScreen('pauseMenu');
+    if (document.exitPointerLock) document.exitPointerLock();
+  }
+
+  _resumeGame() {
+    this.state = 'playing';
+    this._openScreen(null);
+    if (PlatformDetector.isDesktop()) {
+      this.canvas.requestPointerLock();
+    }
+  }
+
+  _quitToMenu() {
+    this.audio.stopFlatline();
+    this.state = 'menu';
+    this._openScreen('mainMenu');
+    this._checkSavedGame();
+    this._updateTouchUIState();
+    if (document.exitPointerLock) document.exitPointerLock();
+  }
+
+  _updateTouchUIState() {
+    if (this.state === 'playing' && PlatformDetector.isTouch()) {
+      this.touchUI.classList.add('active');
+    } else {
+      this.touchUI.classList.remove('active');
+    }
+  }
+
+  _initNewGame(isMenu) {
+    const gen = new HospitalGenerator(MAP_SIZE);
+    this.mapData = gen.generate();
+    this.mapGrid = this.mapData.grid;
+    this.doors = this.mapData.doors;
+
+    const diffCfg = DIFFICULTY_SETTINGS[this.difficulty] || DIFFICULTY_SETTINGS.normal;
+
+    this.player = {
+      x: this.mapData.spawnPos.x,
+      y: this.mapData.spawnPos.y,
+      angle: 0,
+      lightRadius: 7.5 + diffCfg.lightBonus,
+      flameIntensity: 1.0,
+      cupping: false,
+      moveSpeed: 0, // 0=still, 1=crouch, 2=walk, 3=sprint
+      noise: 0,
+      lives: diffCfg.lives,
+      maxLives: diffCfg.lives,
+      relicsCollected: 0,
+      unlockedRelics: [],
+      fuel: 1.0,
+    };
+
+    this.swarm = new SwarmAI(this);
+    this.swarm.spawnInitial(isMenu ? 6 : 10);
+
+    // Apply difficulty shade speed
+    for (let i = 0; i < this.swarm.shades.length; i++) {
+      this.swarm.shades[i].speed *= diffCfg.shadeSpeedMult;
+    }
+
+    this.activeSaveRoom = null;
+    this.saveRoomTimer = 0;
+    this.lastVisitedSavePos = { x: this.player.x, y: this.player.y };
+    this.glitchTimer = 0;
+    this.currentGlitch = null;
+    this.endingStage = 0;
+    this.endingTimer = 0;
+
+    this.sprites = this._buildSpriteList();
+  }
+
+  _buildSpriteList() {
+    const list = [];
+
+    // Relics
+    for (let i = 0; i < this.mapData.relics.length; i++) {
+      const r = this.mapData.relics[i];
+      list.push({
+        x: r.x, y: r.y,
+        glyph: '✦',
+        colorIdx: COLOR_INDICES.amber,
+        type: 'relic',
+        id: r.id,
+        collected: r.collected,
+      });
+    }
+
+    // Fuel Pickups
+    for (let i = 0; i < this.mapData.fuelPickups.length; i++) {
+      const f = this.mapData.fuelPickups[i];
+      list.push({
+        x: f.x, y: f.y,
+        glyph: '◈',
+        colorIdx: COLOR_INDICES.amber,
+        type: 'fuel',
+        id: i,
+        collected: f.collected,
+      });
+    }
+
+    // Save Room Markers
+    for (let i = 0; i < this.mapData.saveRooms.length; i++) {
+      const s = this.mapData.saveRooms[i];
+      list.push({
+        x: s.x, y: s.y,
+        glyph: '+',
+        colorIdx: COLOR_INDICES.amber,
+        type: 'save',
+        id: i,
+        collected: false,
+      });
+    }
+
+    // Exit Morgue Door
+    if (this.mapData.exitPos) {
+      list.push({
+        x: this.mapData.exitPos.x,
+        y: this.mapData.exitPos.y,
+        glyph: '╬',
+        colorIdx: COLOR_INDICES.amber,
+        type: 'exit',
+        id: 0,
+        collected: false,
+      });
+    }
+
+    return list;
+  }
+
+  _resize() {
+    this.canvas.width = this.gridW * CELL_W;
+    this.canvas.height = this.gridH * CELL_H;
+    this.canvas.style.width = '100vw';
+    this.canvas.style.height = '100vh';
+    this.canvas.style.objectFit = 'contain';
+    this.ctx.imageSmoothingEnabled = false;
+  }
+
+  _loop(now) {
+    requestAnimationFrame(this._loop);
+
+    const dtRaw = now - this.lastTime;
+    this.lastTime = now;
+    const dt = Math.min(dtRaw, 50) / 1000;
+
+    if (dt <= 0) return;
+
+    if (this.state === 'playing') {
+      this._update(dt);
+      this._render();
+    } else if (this.state === 'menu') {
+      // Living menu: slow atmospheric pan in corridor
+      this.player.angle += dt * 0.15;
+      const t = now / 1000;
+      this.player.flameIntensity = 0.7 + 0.15 * Math.sin(t * 8.7) + 0.08 * Math.sin(t * 13.1 + 1.3) + 0.07 * Math.sin(t * 23.5 + 2.7);
+      this.swarm.update(dt * 0.5);
+      this._render();
+    } else if (this.state === 'ending') {
+      this._updateEnding(dt);
+    }
+
+    // FPS Counter
+    this.fpsCounter++;
+    this.fpsTime += dtRaw;
+    if (this.fpsTime >= 1000) {
+      this.fpsDisplay = this.fpsCounter;
+      this.fpsCounter = 0;
+      this.fpsTime = 0;
+    }
+  }
+
+  _update(dt) {
+    const p = this.player;
+    const input = this.input;
+    const diffCfg = DIFFICULTY_SETTINGS[this.difficulty] || DIFFICULTY_SETTINGS.normal;
+
+    // Look rotation
+    p.angle += input.getRotation();
+
+    // Movement & 3 Speeds
+    const move = input.getMovement();
+    const sprinting = input.isSprinting();
+    const crouching = input.isCrouching();
+    p.cupping = input.isCupping();
+
+    let speed;
+    if (crouching) {
+      speed = MOVE_SPEED_CROUCH;
+      p.moveSpeed = 1;
+    } else if (sprinting) {
+      speed = MOVE_SPEED_SPRINT;
+      p.moveSpeed = 3;
+    } else {
+      speed = MOVE_SPEED_WALK;
+      p.moveSpeed = 2;
+    }
+
+    if (move.forward === 0 && move.strafe === 0) {
+      p.moveSpeed = 0;
+    }
+
+    const cosA = Math.cos(p.angle);
+    const sinA = Math.sin(p.angle);
+    const dx = (cosA * move.forward - sinA * move.strafe) * speed * dt;
+    const dy = (sinA * move.forward + cosA * move.strafe) * speed * dt;
+
+    if (dx !== 0 || dy !== 0) {
+      this._movePlayer(dx, dy);
+      this.audio.playFootstep(p.moveSpeed);
+    }
+
+    // Flame Flicker Animation (Strictly the only non-reactive animation)
+    const t = this.lastTime / 1000;
+
 </script>
 </body>
 </html>
