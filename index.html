@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>No pulse</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#070708;
+font-family:'Georgia','Palatino Linotype','Book Antiqua','Times New Roman',serif;
+color:#c8c0b0;touch-action:none;user-select:none;-webkit-user-select:none;}
+#game{display:block;width:100%;height:100%;image-rendering:pixelated;}
+
+/* Overlays */
+.overlay-screen{position:fixed;top:0;left:0;width:100%;height:100%;
+display:none;flex-direction:column;align-items:center;justify-content:center;
+background:rgba(7,7,8,0.92);z-index:20;padding:24px;text-align:center;}
+.overlay-screen.active{display:flex;}
+
+h1.game-title{font-size:38px;font-weight:normal;letter-spacing:3px;color:#e6dfd0;
+margin-bottom:8px;text-transform:none;}
+.subtitle{font-size:14px;color:#b8611c;margin-bottom:28px;font-style:italic;}
+
+.menu-list{display:flex;flex-direction:column;gap:12px;width:100%;max-width:280px;}
+.menu-btn{background:rgba(200,192,176,0.06);border:1px solid rgba(200,192,176,0.3);
+color:#c8c0b0;padding:10px 16px;font-family:'Georgia',serif;font-size:15px;
+cursor:pointer;transition:all 0.15s ease;text-align:center;}
+.menu-btn:hover:not(:disabled){background:rgba(200,192,176,0.18);border-color:#f5a642;color:#ffd28a;}
+.menu-btn:disabled{opacity:0.3;cursor:not-allowed;}
+.footer-watermark{position:absolute;bottom:14px;font-size:11px;color:rgba(200,192,176,0.45);
+letter-spacing:1px;}
+
+/* Panels (Journal, Settings, Credits, Terms) */
+.panel-box{width:100%;max-width:520px;max-height:85vh;overflow-y:auto;
+background:#0c0c0e;border:1px solid rgba(200,192,176,0.25);padding:24px;
+display:flex;flex-direction:column;gap:16px;text-align:left;position:relative;}
+.panel-title{font-size:22px;color:#f5a642;border-bottom:1px solid rgba(200,192,176,0.2);
+padding-bottom:8px;font-weight:normal;}
+.panel-content{font-size:13px;line-height:1.6;color:#c8c0b0;display:flex;flex-direction:column;gap:12px;}
+.setting-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;}
+.setting-row select,.setting-row input[type=range]{background:#070708;color:#c8c0b0;
+border:1px solid rgba(200,192,176,0.3);padding:4px 8px;font-family:'Georgia',serif;}
+.journal-entry{border-left:2px solid #b8611c;padding-left:12px;margin-bottom:12px;}
+.journal-entry.locked{opacity:0.4;border-color:rgba(200,192,176,0.2);}
+.journal-relic-title{font-size:14px;color:#ffd28a;margin-bottom:4px;}
+.journal-relic-body{font-size:12px;color:#c8c0b0;line-height:1.5;}
+
+/* Live Glitch Flash Overlay */
+#glitchOverlay{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;
+display:none;z-index:15;align-items:center;justify-content:center;
+background:rgba(7,7,8,0.7);font-family:monospace;white-space:pre;color:#7ad4ce;text-align:center;}
+#glitchOverlay.active{display:flex;}
+#glitchText{font-family:'Georgia',serif;font-size:17px;color:#ffd28a;margin-top:16px;font-style:italic;}
+
+/* Twist Ending Screen */
+#endingScreen{position:fixed;top:0;left:0;width:100%;height:100%;display:none;
+flex-direction:column;align-items:center;justify-content:center;background:#070708;
+z-index:30;padding:24px;text-align:center;}
+#endingScreen.active{display:flex;}
+#endingECG{font-family:monospace;font-size:14px;color:#7ad4ce;white-space:pre;margin-bottom:24px;}
+#endingNarration{font-size:15px;line-height:1.8;max-width:540px;color:#c8c0b0;margin-bottom:28px;}
+
+/* Touch UI */
+#touchUI{display:none;position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;}
+#touchUI.active{display:block;}
+#touchUI .joystick-zone{position:absolute;left:0;bottom:0;width:40%;height:50%;pointer-events:auto;}
+#touchUI .look-zone{position:absolute;right:0;top:0;width:60%;height:70%;pointer-events:auto;}
+#touchUI .joystick-indicator{position:absolute;width:80px;height:80px;border-radius:50%;
+border:2px solid rgba(200,192,176,0.3);background:rgba(200,192,176,0.05);display:none;
+pointer-events:none;transform:translate(-50%,-50%);}
+#touchUI .joystick-knob{position:absolute;width:36px;height:36px;border-radius:50%;
+background:rgba(200,192,176,0.25);pointer-events:none;transform:translate(-50%,-50%);display:none;}
+.touch-btn{position:absolute;pointer-events:auto;border:1px solid rgba(200,192,176,0.35);
+border-radius:8px;background:rgba(200,192,176,0.08);color:rgba(200,192,176,0.7);
+font-family:'Georgia',serif;font-size:13px;display:flex;align-items:center;justify-content:center;
+min-width:52px;min-height:52px;padding:4px 10px;}
+.touch-btn:active{background:rgba(200,192,176,0.25);color:#ffd28a;}
+#btnSprint{right:12px;top:50%;transform:translateY(-50%);}
+#btnCrouch{right:12px;bottom:130px;}
+#btnCupFlame{right:76px;bottom:70px;}
+#btnInteract{right:12px;bottom:65px;min-width:58px;min-height:58px;}
+#btnPause{right:12px;top:12px;min-width:40px;min-height:40px;font-size:16px;}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<!-- Touch Controls Overlay -->
+<div id="touchUI">
+  <div class="joystick-zone" id="joystickZone"></div>
+  <div class="look-zone" id="lookZone"></div>
+  <div class="joystick-indicator" id="joystickBase"></div>
+  <div class="joystick-knob" id="joystickKnob"></div>
+  <button class="touch-btn" id="btnSprint">Sprint</button>
+  <button class="touch-btn" id="btnCrouch">Crouch</button>
+  <button class="touch-btn" id="btnCupFlame">Cup</button>
+  <button class="touch-btn" id="btnInteract">Open</button>
+  <button class="touch-btn" id="btnPause">❚❚</button>
+</div>
+
+<!-- Main Menu Screen -->
+<div id="mainMenu" class="overlay-screen active">
+  <h1 class="game-title">No pulse</h1>
+  <div class="subtitle">A survival-horror in the dark</div>
+  <div class="menu-list">
+    <button class="menu-btn" id="btnMenuContinue" disabled>Continue run</button>
+    <button class="menu-btn" id="btnMenuNewGame">New game</button>
+    <button class="menu-btn" id="btnMenuSettings">Settings</button>
+    <button class="menu-btn" id="btnMenuCredits">Credits</button>
+    <button class="menu-btn" id="btnMenuTerms">Terms and conditions</button>
+  </div>
+  <div class="footer-watermark">Synapse AS7 · github.com/A-aaron207</div>
+</div>
+
+<!-- Pause Menu Screen -->
+<div id="pauseMenu" class="overlay-screen">
+  <h1 class="game-title" style="font-size:28px;">Paused</h1>
+  <div class="menu-list" style="margin-top:16px;">
+    <button class="menu-btn" id="btnPauseResume">Resume</button>
+    <button class="menu-btn" id="btnPauseJournal">Journal</button>
+    <button class="menu-btn" id="btnPauseSettings">Settings</button>
+    <button class="menu-btn" id="btnPauseQuit">Quit to menu</button>
+  </div>
+</div>
+
+<!-- Journal Panel -->
+<div id="journalPanel" class="overlay-screen">
+  <div class="panel-box">
+    <div class="panel-title">Clinical memories</div>
+    <div class="panel-content" id="journalContent">
+      <!-- Injected dynamically -->
+    </div>
+    <button class="menu-btn" id="btnJournalClose" style="align-self:flex-end;margin-top:10px;">Back</button>
+  </div>
+</div>
+
+<!-- Settings Panel -->
+<div id="settingsPanel" class="overlay-screen">
+  <div class="panel-box">
+    <div class="panel-title">Settings</div>
+    <div class="panel-content">
+      <div class="setting-row">
+        <span>Platform mode</span>
+        <select id="optPlatform">
+          <option value="auto">Auto-detect</option>
+          <option value="web">Web (HTML5)</option>
+          <option value="android">Android (.apk)</option>
+          <option value="windows">Windows (.exe)</option>
+          <option value="linux">Linux (.deb)</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <span>ASCII quality</span>
+        <select id="optQuality">
+          <option value="low">Low (60×30)</option>
+          <option value="medium">Medium (90×45)</option>
+          <option value="high">High (120×60)</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <span>Look sensitivity</span>
+        <input type="range" id="optSensitivity" min="1" max="10" value="4">
+      </div>
+      <div class="setting-row">
+        <span>Master volume</span>
+        <input type="range" id="optVolume" min="0" max="10" value="8">
+      </div>
+      <div class="setting-row">
+        <span>Audio mute</span>
+        <input type="checkbox" id="optMute">
+      </div>
+      <div class="setting-row">
+        <span>Show FPS counter</span>
+        <input type="checkbox" id="optFps" checked>
+      </div>
+    </div>
+    <button class="menu-btn" id="btnSettingsClose" style="align-self:flex-end;margin-top:10px;">Back</button>
+  </div>
+</div>
+
+<!-- Credits Screen -->
+<div id="creditsPanel" class="overlay-screen">
+  <div class="panel-box">
+    <div class="panel-title">Credits</div>
+    <div class="panel-content">
+      <p><strong>Created and Developed by:</strong><br>Synapse AS7</p>
+      <p><strong>GitHub Repository:</strong><br><a href="https://github.com/A-aaron207" target="_blank" style="color:#f5a642;text-decoration:none;">github.com/A-aaron207</a></p>
+      <p><strong>Engine Architecture:</strong><br>100% Procedural First-Person ASCII Raycaster with DDA, Bayer ordered dithering, and pre-rendered Glyph Atlas offscreen stamping.</p>
+      <p><strong>Audio Architecture:</strong><br>100% Procedural Web Audio API sound generator. Zero external samples, zero external network requests.</p>
+    </div>
+    <button class="menu-btn" id="btnCreditsClose" style="align-self:flex-end;margin-top:10px;">Back</button>
+  </div>
+</div>
+
+<!-- Terms & Conditions Screen -->
+<div id="termsPanel" class="overlay-screen">
+  <div class="panel-box">
+    <div class="panel-title">Terms and conditions</div>
+    <div class="panel-content">
+      <p><strong>Photosensitivity warning:</strong><br>This game contains flickering light effects, flame oscillation, and live memory glitch flashes. If you experience dizziness or seizures, discontinue immediately.</p>
+      <p><strong>Local data storage:</strong><br>Game progress is stored strictly on your local device. In accordance with permadeath rules, losing all three lives permanently erases the active save file.</p>
+      <p><strong>License and disclaimer:</strong><br>Software provided "as-is" without warranty of any kind. Developed by Synapse AS7.</p>
+    </div>
+    <button class="menu-btn" id="btnTermsClose" style="align-self:flex-end;margin-top:10px;">Back</button>
+  </div>
+</div>
+
+<!-- Death Screen -->
+<div id="deathScreen" class="overlay-screen">
+  <h1 class="game-title" style="color:#7ad4ce;font-size:32px;">No pulse</h1>
+  <div class="subtitle" style="color:#c8c0b0;margin-top:8px;">The light died, and the cold caught you.</div>
+  <div class="menu-list" style="margin-top:20px;">
+    <button class="menu-btn" id="btnDeathRestart">Try again</button>
+    <button class="menu-btn" id="btnDeathMenu">Main menu</button>
+  </div>
+</div>
+
+<!-- Live Glitch Flash Overlay -->
+<div id="glitchOverlay">
+  <div id="glitchArt"></div>
+  <div id="glitchText"></div>
+</div>
+
+<!-- Twist Ending Screen -->
+<div id="endingScreen">
+  <div id="endingECG"></div>
+  <div id="endingNarration"></div>
+  <button class="menu-btn" id="btnEndingMenu" style="max-width:240px;display:none;">Return to stillness</button>
+</div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   CONSTANTS & CONFIGURATION
+   ============================================================ */
+
+const QUALITY_PRESETS = {
+  low:    { gridW: 60,  gridH: 30 },
+  medium: { gridW: 90,  gridH: 45 },
+  high:   { gridW: 120, gridH: 60 },
+};
+
+const DEFAULT_QUALITY = 'medium';
+
+const CELL_W = 8;
+const CELL_H = 10;
+
+const FOV = Math.PI / 3;
+const HALF_FOV = FOV / 2;
+
+const MAP_SIZE = 72;
+
+const BRIGHTNESS_RAMP = ' .:-=+*#%@';
+
+const WALL_GLYPHS   = ['#', '%', '▓', '▒', '║', '│'];
+const DOOR_GLYPHS   = ['╬', '╫', '≡', '╪'];
+const FLOOR_GLYPHS  = ['~', '≈', '-', '.', ','];
+const SHADE_GLYPHS  = ['/', '\\', '|', '!', 'I', 'Y'];
+
+</script>
+</body>
+</html>
