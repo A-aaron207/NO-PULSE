@@ -2929,6 +2929,296 @@ class Game {
     this._loseLife('A shade engulfed your dying light.');
   }
 
+  _onLightDied() {
+    this._loseLife('Your light flickered out into total darkness.');
+  }
+
+  _loseLife(causeMsg) {
+    const p = this.player;
+    p.lives--;
+
+    this.audio.playFlatline();
+    setTimeout(() => this.audio.stopFlatline(), 1200);
+
+    if (p.lives > 0) {
+      // Respawn at last visited save room
+      const respawnTarget = this.lastVisitedSavePos || this.mapData.spawnPos;
+      p.x = respawnTarget.x;
+      p.y = respawnTarget.y;
+      p.fuel = 0.65;
+      p.moveSpeed = 0;
+      this.swarm.pushBackNear(p.x, p.y, 22);
+
+      this.hudMessage = causeMsg + ' (' + p.lives + ' lives remain)';
+      this.hudMessageTimer = 3.5;
+      this._saveGame();
+    } else {
+      // Permadeath: wipe save run
+      this.storage.remove('nopulse_save');
+      this.state = 'death';
+      this._openScreen('deathScreen');
+      if (document.exitPointerLock) document.exitPointerLock();
+    }
+  }
+
+  _triggerTwistEnding() {
+    this.state = 'ending';
+    this.endingStage = 0;
+    this.endingTimer = 0;
+    this.audio.playFlatline();
+    this.storage.remove('nopulse_save');
+    this._openScreen('endingScreen');
+    if (document.exitPointerLock) document.exitPointerLock();
+  }
+
+  _updateEnding(dt) {
+    this.endingTimer += dt;
+    const ecg = document.getElementById('endingECG');
+    const narr = document.getElementById('endingNarration');
+    const btn = document.getElementById('btnEndingMenu');
+
+    // ECG ASCII flatline animation sequence
+    const t = Math.floor(this.endingTimer * 12);
+    let line = '-------------------------------------------------------';
+    const cursor = t % line.length;
+    let ecgText = line.substring(0, cursor) + '[ASYSTOLE]' + line.substring(cursor);
+
+    ecg.textContent = ecgText;
+
+    if (this.endingTimer < 3.0) {
+      narr.textContent = "The heavy steel exit doors swing wide...";
+    } else if (this.endingTimer < 7.0) {
+      narr.textContent = "There is no cold night outside. Only the unbearable glare of surgical lamps, sterile tile, and four figures in bloodied scrubs standing in silence.";
+    } else if (this.endingTimer < 12.0) {
+      narr.textContent = "You never escaped the hospital. The swarm was not demons or monsters—only your own synapses violently resisting the creeping cold of cardiac standstill.";
+    } else {
+      narr.textContent = "Time of pronouncement: 03:17 AM.\n\nNo pulse.";
+      btn.style.display = 'block';
+    }
+  }
+
+  _render() {
+    const ctx = this.ctx;
+    const cw = this.canvas.width;
+    const ch = this.canvas.height;
+
+    ctx.fillStyle = '#070708';
+    ctx.fillRect(0, 0, cw, ch);
+
+    // 1. Raycaster Walls, Floor, Ceiling
+    this.raycaster.render(
+      ctx,
+      this.mapGrid,
+      MAP_SIZE,
+      this.doors,
+      this.player.x,
+      this.player.y,
+      this.player.angle,
+      this.player.lightRadius,
+      this.player.flameIntensity
+    );
+
+    // 2. Sprites: Items + Shades
+    const allSprites = this.sprites.concat(this.swarm.shades);
+    this.raycaster.renderSprites(
+      ctx,
+      allSprites,
+      this.player.x,
+      this.player.y,
+      this.player.angle,
+      this.player.lightRadius,
+      this.player.flameIntensity
+    );
+
+    // 3. HUD during play
+    if (this.state === 'playing') {
+      this._renderHUD(ctx, cw, ch);
+    }
+  }
+
+  _renderHUD(ctx, cw, ch) {
+    const p = this.player;
+    const margin = 12;
+
+    // Light Bar (Amber, flickers when low)
+    const barW = 120;
+    const barH = 7;
+    ctx.fillStyle = 'rgba(200,192,176,0.25)';
+    ctx.fillRect(margin, ch - margin - barH - 24, barW + 2, barH + 2);
+
+    const fuelFrac = Math.max(0, Math.min(1, p.fuel));
+    const flicker = p.fuel < 0.25 ? (Math.random() > 0.4 ? 1.0 : 0.3) : 1.0;
+    ctx.fillStyle = 'rgba(245,166,66,' + (0.85 * flicker) + ')';
+    ctx.fillRect(margin + 1, ch - margin - barH - 23, barW * fuelFrac, barH);
+
+    ctx.fillStyle = 'rgba(200,192,176,0.65)';
+    ctx.font = '10px Georgia, serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('Flame fuel', margin, ch - margin - barH - 26);
+
+    // Noise Reactive Meter
+    const noiseW = 80;
+    const noiseX = margin + barW + 18;
+    ctx.fillStyle = 'rgba(200,192,176,0.25)';
+    ctx.fillRect(noiseX, ch - margin - barH - 24, noiseW + 2, barH + 2);
+    ctx.fillStyle = p.noise > 0.5 ? 'rgba(245,166,66,0.85)' : 'rgba(200,192,176,0.5)';
+    ctx.fillRect(noiseX + 1, ch - margin - barH - 23, noiseW * p.noise, barH);
+    ctx.fillStyle = 'rgba(200,192,176,0.65)';
+    ctx.fillText('Noise', noiseX, ch - margin - barH - 26);
+
+    // Relic Counter
+    ctx.fillStyle = 'rgba(245,166,66,0.9)';
+    ctx.font = '13px Georgia, serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('Relics: ' + p.relicsCollected + ' / 5', cw - margin, ch - margin);
+
+    // Lives Indicator
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    let livesStr = '';
+    for (let i = 0; i < p.maxLives; i++) {
+      livesStr += i < p.lives ? '♥ ' : '♡ ';
+    }
+    ctx.fillStyle = 'rgba(245,166,66,0.85)';
+    ctx.font = '12px Georgia, serif';
+    ctx.fillText(livesStr.trim(), cw - margin, margin + 18);
+
+    // Compass Strip
+    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    let compassAngle = (-p.angle + Math.PI * 2.5) % (Math.PI * 2);
+    const idx = Math.round(compassAngle / (Math.PI / 4)) % 8;
+    ctx.fillStyle = 'rgba(200,192,176,0.7)';
+    ctx.font = '11px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(dirs[idx], cw / 2, margin);
+
+    // Contextual Prompts & Door Bolting Progress
+    if (this.targetedDoorKey) {
+      const door = this.doors.get(this.targetedDoorKey);
+      if (door) {
+        ctx.fillStyle = 'rgba(245,166,66,0.9)';
+        ctx.font = '12px Georgia, serif';
+        ctx.textAlign = 'center';
+        let prompt = door.open ? '[E] Slam door' : '[E] Open · Hold [E] to bolt';
+        if (this.interactHoldTimer > 0 && !door.open && !door.bolted) {
+          const prog = Math.min(100, Math.floor((this.interactHoldTimer / DOOR_BOLT_TIME) * 100));
+          prompt = 'Bolting door... ' + prog + '%';
+        }
+        ctx.fillText(prompt, cw / 2, ch - 48);
+      }
+    }
+
+    // Save Room Countdown Timer
+    if (this.activeSaveRoom) {
+      ctx.textAlign = 'center';
+      if (this.saveRoomTimer > 0) {
+        ctx.fillStyle = 'rgba(245,166,66,0.95)';
+        ctx.font = '13px Georgia, serif';
+        ctx.fillText('Sanctuary countdown: ' + Math.ceil(this.saveRoomTimer) + 's', cw / 2, 36);
+      } else {
+        ctx.fillStyle = 'rgba(122,212,206,0.95)';
+        ctx.font = '13px Georgia, serif';
+        ctx.fillText('Sanctuary breached · Swarm active', cw / 2, 36);
+      }
+    }
+
+    // Floating HUD Notification
+    if (this.hudMessage) {
+      ctx.fillStyle = 'rgba(230,223,208,0.9)';
+      ctx.font = '12px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(this.hudMessage, cw / 2, ch / 2 + 50);
+    }
+
+    // Minimap (Fog-of-war)
+    this._renderMinimap(ctx, cw);
+
+    // FPS Display
+    if (this.showFps) {
+      ctx.fillStyle = 'rgba(200,192,176,0.5)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('FPS: ' + this.fpsDisplay + ' (' + this.difficulty + ')', 6, 6);
+    }
+  }
+
+  _renderMinimap(ctx, canvasW) {
+    const p = this.player;
+    const mmSize = 72;
+    const mmX = canvasW - mmSize - 10;
+    const mmY = 38;
+    const mmScale = mmSize / MAP_SIZE;
+
+    ctx.fillStyle = 'rgba(7,7,8,0.75)';
+    ctx.fillRect(mmX, mmY, mmSize, mmSize);
+    ctx.strokeStyle = 'rgba(200,192,176,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(mmX, mmY, mmSize, mmSize);
+
+    const viewRange = 16;
+    const pxi = Math.floor(p.x);
+    const pyi = Math.floor(p.y);
+    const startX = Math.max(0, pxi - viewRange);
+    const endX = Math.min(MAP_SIZE, pxi + viewRange);
+    const startY = Math.max(0, pyi - viewRange);
+    const endY = Math.min(MAP_SIZE, pyi + viewRange);
+
+    for (let y = startY; y < endY; y++) {
+      for (let x = startX; x < endX; x++) {
+        const tile = this.mapGrid[y * MAP_SIZE + x];
+        if (tile === 0) continue;
+        const dist = Math.hypot(x - pxi, y - pyi);
+        if (dist > viewRange) continue;
+        const alpha = Math.max(0.1, 1 - dist / viewRange) * 0.6;
+        if (tile === 1) {
+          ctx.fillStyle = 'rgba(200,192,176,' + alpha + ')';
+        } else if (tile === 2) {
+          ctx.fillStyle = 'rgba(245,166,66,' + alpha + ')';
+        }
+        ctx.fillRect(mmX + x * mmScale, mmY + y * mmScale, Math.max(1, mmScale), Math.max(1, mmScale));
+      }
+    }
+
+    // Save rooms
+    for (let i = 0; i < this.mapData.saveRooms.length; i++) {
+      const s = this.mapData.saveRooms[i];
+      ctx.fillStyle = 'rgba(245,166,66,0.7)';
+      ctx.fillRect(mmX + s.x * mmScale - 1, mmY + s.y * mmScale - 1, 3, 3);
+    }
+
+    // Exit
+    if (this.mapData.exitPos && p.relicsCollected >= 5) {
+      ctx.fillStyle = 'rgba(245,166,66,0.95)';
+      ctx.fillRect(mmX + this.mapData.exitPos.x * mmScale - 1, mmY + this.mapData.exitPos.y * mmScale - 1, 3, 3);
+    }
+
+    // Player arrow
+    ctx.save();
+    ctx.translate(mmX + p.x * mmScale, mmY + p.y * mmScale);
+    ctx.rotate(p.angle - Math.PI / 2);
+    ctx.fillStyle = 'rgba(245,166,66,0.95)';
+    ctx.beginPath();
+    ctx.moveTo(0, -3);
+    ctx.lineTo(-2, 2.5);
+    ctx.lineTo(2, 2.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* ============================================================
+   BOOTSTRAP
+   ============================================================ */
+
+window.addEventListener('DOMContentLoaded', function() {
+  new Game();
+});
+
 </script>
 </body>
 </html>
