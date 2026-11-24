@@ -84,6 +84,7 @@ min-width:52px;min-height:52px;padding:4px 10px;}
 </head>
 <body>
 
+<button id="btnFullscreen" class="touch-btn" title="Toggle fullscreen (Double-click/tap screen edge to exit)" style="position:fixed;top:12px;left:12px;z-index:25;min-width:38px;min-height:38px;font-size:14px;cursor:pointer;">⛶</button>
 <canvas id="game"></canvas>
 
 <!-- Touch Controls Overlay -->
@@ -208,6 +209,10 @@ min-width:52px;min-height:52px;padding:4px 10px;}
       <div class="setting-row">
         <span>Audio mute</span>
         <input type="checkbox" id="optMute">
+      </div>
+      <div class="setting-row">
+        <span>Fullscreen mode</span>
+        <button class="menu-btn" id="btnSettingsFullscreen" style="padding:4px 12px;font-size:12px;">Toggle</button>
       </div>
       <div class="setting-row">
         <span>Show FPS counter</span>
@@ -2331,6 +2336,97 @@ class Game {
 
     // Ending Return
     document.getElementById('btnEndingMenu').addEventListener('click', () => self._quitToMenu());
+
+    // Fullscreen Support with Auto-detection & Edge Double-tap/click
+    const canFullscreen = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+    const btnFs = document.getElementById('btnFullscreen');
+    const btnSettingsFs = document.getElementById('btnSettingsFullscreen');
+
+    if (!canFullscreen) {
+      if (btnFs) btnFs.style.display = 'none';
+      if (btnSettingsFs && btnSettingsFs.parentElement) btnSettingsFs.parentElement.style.display = 'none';
+    }
+
+    const toggleFullscreen = () => {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        const el = document.documentElement;
+        if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+        else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      } else {
+        if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+      }
+    };
+
+    if (btnFs) {
+      btnFs.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleFullscreen();
+      });
+    }
+
+    if (btnSettingsFs) {
+      btnSettingsFs.addEventListener('click', toggleFullscreen);
+    }
+
+    const updateFsButton = () => {
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      if (btnFs) {
+        btnFs.textContent = isFs ? '🗗' : '⛶';
+        btnFs.setAttribute('title', isFs ? 'Exit fullscreen (Double-click/tap edge)' : 'Enter fullscreen');
+      }
+      if (btnSettingsFs) {
+        btnSettingsFs.textContent = isFs ? 'Exit fullscreen' : 'Enter fullscreen';
+      }
+      self._resize();
+    };
+
+    document.addEventListener('fullscreenchange', updateFsButton);
+    document.addEventListener('webkitfullscreenchange', updateFsButton);
+
+    // Double-click on screen edges to exit fullscreen (Desktop)
+    const isScreenEdge = (cx, cy) => {
+      const margin = 50;
+      return cx <= margin || cx >= window.innerWidth - margin || cy <= margin || cy >= window.innerHeight - margin;
+    };
+
+    window.addEventListener('dblclick', (e) => {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        if (isScreenEdge(e.clientX, e.clientY)) {
+          if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+          else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+          self.hudMessage = 'Exited fullscreen';
+          self.hudMessageTimer = 1.5;
+        }
+      }
+    });
+
+    // Double-tap on screen edges to exit fullscreen (Mobile touch)
+    let lastEdgeTapTime = 0;
+    let lastEdgeTapX = 0;
+    let lastEdgeTapY = 0;
+
+    window.addEventListener('touchstart', (e) => {
+      if (!(document.fullscreenElement || document.webkitFullscreenElement)) return;
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      if (isScreenEdge(touch.clientX, touch.clientY)) {
+        const now = Date.now();
+        const dx = Math.abs(touch.clientX - lastEdgeTapX);
+        const dy = Math.abs(touch.clientY - lastEdgeTapY);
+        if (now - lastEdgeTapTime < 380 && dx < 36 && dy < 36) {
+          if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+          else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+          self.hudMessage = 'Exited fullscreen';
+          self.hudMessageTimer = 1.5;
+          lastEdgeTapTime = 0;
+        } else {
+          lastEdgeTapTime = now;
+          lastEdgeTapX = touch.clientX;
+          lastEdgeTapY = touch.clientY;
+        }
+      }
+    }, { passive: true });
 
     // Settings Controls
     const optPlatform = document.getElementById('optPlatform');

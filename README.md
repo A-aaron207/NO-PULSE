@@ -139,7 +139,7 @@ The entire soundscape is generated algorithmically in code:
 
 ---
 
-## Controls
+## Controls & Navigation
 
 ### Desktop
 - **Look:** Mouse (Click canvas to capture Pointer Lock)
@@ -150,6 +150,8 @@ The entire soundscape is generated algorithmically in code:
 - **Interact / Slam:** Tap `E`
 - **Bolt Door:** Hold `E` (1.2s on closed door)
 - **Pause / Journal:** `Esc`
+- **Fullscreen:** `⛶` button (top-left) or Settings toggle
+- **Exit Fullscreen Quick-Gesture:** Double-click near any edge of the screen
 
 ### Mobile & Touch
 - **Move:** Floating virtual joystick (bottom-left quadrant)
@@ -159,6 +161,8 @@ The entire soundscape is generated algorithmically in code:
 - **Cup Flame:** Hold `Cup` button
 - **Interact / Bolt:** `Open` / `Slam` / Hold for bolt
 - **Pause:** `❚❚` button (top-right)
+- **Fullscreen:** `⛶` button (top-left)
+- **Exit Fullscreen Quick-Gesture:** Double-tap near any edge of the screen
 
 ---
 
