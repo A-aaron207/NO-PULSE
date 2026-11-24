@@ -9,7 +9,7 @@
 html,body{width:100%;height:100%;overflow:hidden;background:#070708;
 font-family:'Georgia','Palatino Linotype','Book Antiqua','Times New Roman',serif;
 color:#c8c0b0;touch-action:none;user-select:none;-webkit-user-select:none;}
-#game{display:block;width:100%;height:100%;image-rendering:pixelated;}
+#game{display:block;width:100%;height:100%;image-rendering:-webkit-optimize-contrast;image-rendering:pixelated;image-rendering:crisp-edges;}
 
 /* Overlays */
 .overlay-screen{position:fixed;top:0;left:0;width:100%;height:100%;
@@ -153,9 +153,10 @@ min-width:52px;min-height:52px;padding:4px 10px;}
       <div class="setting-row">
         <span>ASCII quality</span>
         <select id="optQuality">
-          <option value="low">Low (60×30)</option>
-          <option value="medium">Medium (90×45)</option>
-          <option value="high">High (120×60)</option>
+          <option value="low">Low (80×40)</option>
+          <option value="medium">Medium (120×60)</option>
+          <option value="high" selected>High (160×80)</option>
+          <option value="ultra">Ultra (200×100)</option>
         </select>
       </div>
       <div class="setting-row">
@@ -237,12 +238,13 @@ min-width:52px;min-height:52px;padding:4px 10px;}
    ============================================================ */
 
 const QUALITY_PRESETS = {
-  low:    { gridW: 60,  gridH: 30 },
-  medium: { gridW: 90,  gridH: 45 },
-  high:   { gridW: 120, gridH: 60 },
+  low:    { gridW: 80,  gridH: 40 },
+  medium: { gridW: 120, gridH: 60 },
+  high:   { gridW: 160, gridH: 80 },
+  ultra:  { gridW: 200, gridH: 100 },
 };
 
-const DEFAULT_QUALITY = 'medium';
+const DEFAULT_QUALITY = 'high';
 
 const CELL_W = 8;
 const CELL_H = 10;
@@ -1384,18 +1386,46 @@ class SwarmAI {
     this.lastLoudNoiseTime = 0;
   }
 
-  spawnInitial(count) {
+  spawnInitial(count, isMenu) {
     this.shades = [];
     const rooms = this.game.mapData.rooms;
     const spawnPos = this.game.mapData.spawnPos;
 
-    const farRooms = rooms.filter(r => {
-      const d = Math.hypot(r.cx - spawnPos.x, r.cy - spawnPos.y);
-      return d > 18;
+    if (isMenu) {
+      // In menu: place 2 shades directly in front of the camera down the corridor
+      const lookDirX = Math.cos(this.game.player.angle);
+      const lookDirY = Math.sin(this.game.player.angle);
+      const s1 = new Shade(spawnPos.x + lookDirX * 5.2, spawnPos.y + lookDirY * 5.2);
+      const s2 = new Shade(spawnPos.x + lookDirX * 7.8 - lookDirY * 1.6, spawnPos.y + lookDirY * 7.8 + lookDirX * 1.6);
+      this.shades.push(s1, s2);
+      return;
+    }
+
+    // In game: place 2 shades in the immediate adjoining rooms/corridor (8-12 tiles away)
+    const sortedRooms = rooms.slice().sort((a, b) => {
+      const dA = Math.hypot(a.cx - spawnPos.x, a.cy - spawnPos.y);
+      const dB = Math.hypot(b.cx - spawnPos.x, b.cy - spawnPos.y);
+      return dA - dB;
     });
 
-    for (let i = 0; i < count; i++) {
-      const r = farRooms[i % farRooms.length] || rooms[rooms.length - 1];
+    const nearRooms = sortedRooms.filter(r => {
+      const d = Math.hypot(r.cx - spawnPos.x, r.cy - spawnPos.y);
+      return d >= 7 && d <= 14;
+    });
+    const farRooms = sortedRooms.filter(r => {
+      const d = Math.hypot(r.cx - spawnPos.x, r.cy - spawnPos.y);
+      return d > 14;
+    });
+
+    for (let i = 0; i < 2 && i < nearRooms.length; i++) {
+      const r = nearRooms[i];
+      const shade = new Shade(r.cx + 0.5, r.cy + 0.5);
+      this.shades.push(shade);
+    }
+
+    const remaining = count - this.shades.length;
+    for (let i = 0; i < remaining; i++) {
+      const r = farRooms[i % farRooms.length] || sortedRooms[sortedRooms.length - 1];
       const sx = r.cx + (Math.random() - 0.5) * Math.max(1, r.w - 3);
       const sy = r.cy + (Math.random() - 0.5) * Math.max(1, r.h - 3);
       const shade = new Shade(sx, sy);
@@ -1796,7 +1826,7 @@ class Raycaster {
     const ch = this.cellH;
     const atlas = this.atlas;
 
-    const effectiveLightR = Math.max(3.5, lightRadius * flameIntensity);
+    const effectiveLightR = Math.max(4.0, lightRadius * flameIntensity);
 
     const visible = [];
     for (let i = 0; i < sprites.length; i++) {
@@ -1806,8 +1836,8 @@ class Raycaster {
       const dy = sp.y - playerY;
       const dist = Math.hypot(dx, dy);
 
-      // Shades can have faint glint slightly beyond normal vision
-      const maxVis = sp.type === 'shade' ? effectiveLightR + 2.5 : effectiveLightR + 1.0;
+      // Shades emit a piercing teal presence visible even at the dark edge
+      const maxVis = sp.type === 'shade' ? effectiveLightR + 4.8 : effectiveLightR + 1.2;
       if (dist > maxVis) continue;
       visible.push({ sprite: sp, dist: dist, dx: dx, dy: dy });
     }
@@ -1838,37 +1868,56 @@ class Raycaster {
       const drawStartX = Math.max(0, screenX - Math.floor(spriteWidth / 2));
       const drawEndX = Math.min(gw - 1, screenX + Math.floor(spriteWidth / 2));
 
-      let brightness = Math.max(0, 1.0 - Math.pow(v.dist / effectiveLightR, 1.2));
       if (sp.type === 'shade') {
-        // Teal glint visible at edge of darkness
-        brightness = Math.max(0.12, brightness * 1.1);
-      }
+        // Full imposing tall humanoid Drowned Teal silhouette!
+        const shadeBrightness = Math.max(0.35, Math.min(1.0, (1.0 - v.dist / (effectiveLightR + 4.8)) * 1.5));
+        const colWidth = Math.max(2, Math.min(7, Math.floor(spriteWidth * 0.45)));
+        const startCol = Math.floor(screenX - colWidth / 2);
 
-      if (brightness < 0.02) continue;
+        for (let c = 0; c < colWidth; c++) {
+          const col = startCol + c;
+          if (col < 0 || col >= gw) continue;
+          if (transformY > this.zBuffer[col] + 0.18) continue; // Behind wall
 
-      const glyph = sp.glyph || '✦';
-      const colorIdx = sp.colorIdx !== undefined ? sp.colorIdx : COLOR_INDICES.amber;
+          for (let row = drawStartY; row <= drawEndY; row++) {
+            if (row < 0 || row >= gh) continue;
 
-      const midCol = Math.floor((drawStartX + drawEndX) / 2);
-      const midRow = Math.floor((drawStartY + drawEndY) / 2);
+            // Sinister jittering glyph pattern across the entity body
+            const gIdx = Math.abs((row * 7 + col * 13 + (sp.glyphIdx || 0) * 3) | 0) % SHADE_GLYPHS.length;
+            const glyph = SHADE_GLYPHS[gIdx];
 
-      const renderCols = Math.min(3, drawEndX - drawStartX + 1);
-      const renderRows = Math.min(3, drawEndY - drawStartY + 1);
-      const startC = midCol - Math.floor(renderCols / 2);
-      const startR = midRow - Math.floor(renderRows / 2);
+            const dithered = shadeBrightness + (BAYER_4x4[row & 3][col & 3] - 0.5) * 0.12;
+            const finalB = Math.max(0.22, Math.min(1.0, dithered));
+            atlas.stamp(ctx, col * cw, row * ch, glyph, COLOR_INDICES.teal, finalB);
+          }
+        }
+      } else {
+        // Items: Relics, Fuel, Save Markers, Exit
+        let brightness = Math.max(0, 1.0 - Math.pow(v.dist / effectiveLightR, 1.2));
+        if (brightness < 0.02) continue;
 
-      for (let r = 0; r < renderRows; r++) {
-        for (let c = 0; c < renderCols; c++) {
-          const col = startC + c;
-          const row = startR + r;
-          if (col < 0 || col >= gw || row < 0 || row >= gh) continue;
-          if (transformY > this.zBuffer[col]) continue;
+        const glyph = sp.glyph || '✦';
+        const colorIdx = sp.colorIdx !== undefined ? sp.colorIdx : COLOR_INDICES.amber;
 
-          const dithered = brightness + (BAYER_4x4[row & 3][col & 3] - 0.5) * 0.1;
-          const finalB = Math.max(0, Math.min(1, dithered));
-          if (finalB < 0.02) continue;
+        const midCol = Math.floor((drawStartX + drawEndX) / 2);
+        const midRow = Math.floor((drawStartY + drawEndY) / 2);
 
-          atlas.stamp(ctx, col * cw, row * ch, glyph, colorIdx, finalB);
+        const renderCols = Math.min(3, drawEndX - drawStartX + 1);
+        const renderRows = Math.min(3, drawEndY - drawStartY + 1);
+        const startC = midCol - Math.floor(renderCols / 2);
+        const startR = midRow - Math.floor(renderRows / 2);
+
+        for (let r = 0; r < renderRows; r++) {
+          for (let c = 0; c < renderCols; c++) {
+            const col = startC + c;
+            const row = startR + r;
+            if (col < 0 || col >= gw || row < 0 || row >= gh) continue;
+            if (transformY > this.zBuffer[col]) continue;
+
+            const dithered = brightness + (BAYER_4x4[row & 3][col & 3] - 0.5) * 0.1;
+            const finalB = Math.max(0.04, Math.min(1, dithered));
+            atlas.stamp(ctx, col * cw, row * ch, glyph, colorIdx, finalB);
+          }
         }
       }
     }
@@ -2498,7 +2547,7 @@ class Game {
     };
 
     this.swarm = new SwarmAI(this);
-    this.swarm.spawnInitial(isMenu ? 6 : 10);
+    this.swarm.spawnInitial(isMenu ? 2 : 12, isMenu);
 
     // Apply difficulty shade speed
     for (let i = 0; i < this.swarm.shades.length; i++) {
@@ -3086,14 +3135,15 @@ class Game {
     ctx.fillText(livesStr.trim(), cw - margin, margin + 18);
 
     // Compass Strip
-    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-    let compassAngle = (-p.angle + Math.PI * 2.5) % (Math.PI * 2);
-    const idx = Math.round(compassAngle / (Math.PI / 4)) % 8;
-    ctx.fillStyle = 'rgba(200,192,176,0.7)';
+    const dirs = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'];
+    const normAngle = ((p.angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const dirIdx = Math.floor(((normAngle + Math.PI / 8) % (Math.PI * 2)) / (Math.PI / 4));
+    const compassStr = dirs[dirIdx] || 'N';
+    ctx.fillStyle = 'rgba(200,192,176,0.75)';
     ctx.font = '11px Georgia, serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText(dirs[idx], cw / 2, margin);
+    ctx.fillText(compassStr, cw / 2, margin);
 
     // Contextual Prompts & Door Bolting Progress
     if (this.targetedDoorKey) {
@@ -3194,6 +3244,18 @@ class Game {
     if (this.mapData.exitPos && p.relicsCollected >= 5) {
       ctx.fillStyle = 'rgba(245,166,66,0.95)';
       ctx.fillRect(mmX + this.mapData.exitPos.x * mmScale - 1, mmY + this.mapData.exitPos.y * mmScale - 1, 3, 3);
+    }
+
+    // Nearby shades visible on radar as faint teal blips
+    if (this.swarm && this.swarm.shades) {
+      for (let i = 0; i < this.swarm.shades.length; i++) {
+        const sh = this.swarm.shades[i];
+        const sDist = Math.hypot(sh.x - p.x, sh.y - p.y);
+        if (sDist < 18) {
+          ctx.fillStyle = 'rgba(122,212,206,0.85)';
+          ctx.fillRect(mmX + sh.x * mmScale - 1, mmY + sh.y * mmScale - 1, 2, 2);
+        }
+      }
     }
 
     // Player arrow
