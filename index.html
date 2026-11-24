@@ -2128,6 +2128,276 @@ class Game {
     this.ctx = this.canvas.getContext('2d', { alpha: false });
     this.touchUI = document.getElementById('touchUI');
 
+    this.state = 'menu'; // menu, playing, paused, journal, settings, credits, terms, death, ending
+    this.difficulty = 'normal';
+
+    this.quality = DEFAULT_QUALITY;
+    this.gridW = QUALITY_PRESETS[this.quality].gridW;
+    this.gridH = QUALITY_PRESETS[this.quality].gridH;
+
+    this.storage = new StorageAdapter();
+    this.audio = new AudioSystem();
+
+    PlatformDetector.detect();
+
+    this.atlas = new GlyphAtlas(CELL_W, CELL_H, ALL_GLYPHS);
+    this.raycaster = new Raycaster(this.atlas, this.gridW, this.gridH);
+    this.input = new InputManager(this.canvas, this.touchUI);
+
+    this.mapData = null;
+    this.mapGrid = null;
+    this.doors = null;
+    this.player = null;
+    this.swarm = null;
+    this.sprites = [];
+
+    // Save Room State
+    this.activeSaveRoom = null;
+    this.saveRoomTimer = 0;
+    this.lastVisitedSavePos = null;
+
+    // Door interaction tracking
+    this.interactHoldTimer = 0;
+    this.targetedDoorKey = null;
+    this.hudMessage = '';
+    this.hudMessageTimer = 0;
+
+    // Relic Glitch Flash State
+    this.glitchTimer = 0;
+    this.currentGlitch = null;
+
+    // ECG Ending Sequence
+    this.endingStage = 0;
+    this.endingTimer = 0;
+
+    // Performance & FPS
+    this.lastTime = 0;
+    this.fpsCounter = 0;
+    this.fpsTime = 0;
+    this.fpsDisplay = 0;
+    this.showFps = true;
+
+    this._setupUI();
+    this._checkSavedGame();
+
+    this._resize();
+    window.addEventListener('resize', this._resize.bind(this));
+
+    // Initialize map for living menu background
+    this._initNewGame(true);
+
+    this._loop = this._loop.bind(this);
+    requestAnimationFrame(this._loop);
+  }
+
+  _setupUI() {
+    const self = this;
+
+    // Main Menu Buttons
+    document.getElementById('btnMenuNewGame').addEventListener('click', () => {
+      self.audio.init();
+      self.audio.resume();
+      self._startNewRun(self.difficulty);
+    });
+
+    document.getElementById('btnMenuContinue').addEventListener('click', () => {
+      self.audio.init();
+      self.audio.resume();
+      self._loadSavedRun();
+    });
+
+    document.getElementById('btnMenuSettings').addEventListener('click', () => self._openSettings('menu'));
+    document.getElementById('btnMenuCredits').addEventListener('click', () => self._openScreen('creditsPanel'));
+    document.getElementById('btnMenuTerms').addEventListener('click', () => self._openScreen('termsPanel'));
+
+    // Pause Menu
+    document.getElementById('btnPauseResume').addEventListener('click', () => self._resumeGame());
+    document.getElementById('btnPauseJournal').addEventListener('click', () => self._openJournal());
+    document.getElementById('btnPauseSettings').addEventListener('click', () => self._openSettings('paused'));
+    document.getElementById('btnPauseQuit').addEventListener('click', () => self._quitToMenu());
+
+    // Close buttons for sub-panels
+    document.getElementById('btnJournalClose').addEventListener('click', () => self._openScreen('pauseMenu'));
+    document.getElementById('btnSettingsClose').addEventListener('click', () => {
+      self._openScreen(self._settingsReturnState === 'menu' ? 'mainMenu' : 'pauseMenu');
+      self.state = self._settingsReturnState;
+    });
+    document.getElementById('btnCreditsClose').addEventListener('click', () => self._openScreen('mainMenu'));
+    document.getElementById('btnTermsClose').addEventListener('click', () => self._openScreen('mainMenu'));
+
+    // Death Screen
+    document.getElementById('btnDeathRestart').addEventListener('click', () => self._startNewRun(self.difficulty));
+    document.getElementById('btnDeathMenu').addEventListener('click', () => self._quitToMenu());
+
+    // Ending Return
+    document.getElementById('btnEndingMenu').addEventListener('click', () => self._quitToMenu());
+
+    // Settings Controls
+    const optPlatform = document.getElementById('optPlatform');
+    optPlatform.addEventListener('change', (e) => {
+      PlatformDetector.setOverride(e.target.value);
+      self._updateTouchUIState();
+      self.storage.save('nopulse_platform', e.target.value);
+    });
+
+    const optQuality = document.getElementById('optQuality');
+    optQuality.value = this.quality;
+    optQuality.addEventListener('change', (e) => {
+      self.quality = e.target.value;
+      self.gridW = QUALITY_PRESETS[self.quality].gridW;
+      self.gridH = QUALITY_PRESETS[self.quality].gridH;
+      self.raycaster = new Raycaster(self.atlas, self.gridW, self.gridH);
+      self._resize();
+      self.storage.save('nopulse_quality', self.quality);
+    });
+
+    const optSens = document.getElementById('optSensitivity');
+    optSens.addEventListener('input', (e) => {
+      self.input.setSensitivity(parseInt(e.target.value, 10));
+      self.storage.save('nopulse_sens', e.target.value);
+    });
+
+    const optVol = document.getElementById('optVolume');
+    optVol.addEventListener('input', (e) => {
+      self.audio.setVolume(parseInt(e.target.value, 10) / 10);
+      self.storage.save('nopulse_vol', e.target.value);
+    });
+
+    const optMute = document.getElementById('optMute');
+    optMute.addEventListener('change', (e) => {
+      self.audio.setMute(e.target.checked);
+      self.storage.save('nopulse_mute', e.target.checked);
+    });
+
+    const optFps = document.getElementById('optFps');
+    optFps.addEventListener('change', (e) => {
+      self.showFps = e.target.checked;
+      self.storage.save('nopulse_fps', e.target.checked);
+    });
+
+    // Mobile Pause button
+    const btnPause = document.getElementById('btnPause');
+    btnPause.addEventListener('click', () => {
+      if (self.state === 'playing') self._pauseGame();
+    });
+
+    // Keyboard ESC for pause
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape') {
+        if (self.state === 'playing') {
+          self._pauseGame();
+        } else if (self.state === 'paused') {
+          self._resumeGame();
+        } else if (self.state === 'journal' || self.state === 'settings' || self.state === 'credits' || self.state === 'terms') {
+          self._openScreen(self._settingsReturnState === 'menu' ? 'mainMenu' : 'pauseMenu');
+          self.state = self._settingsReturnState;
+        }
+      }
+    });
+
+    // Canvas click requests pointer lock during play
+    this.canvas.addEventListener('click', () => {
+      if (self.state === 'playing' && PlatformDetector.isDesktop()) {
+        self.canvas.requestPointerLock();
+      }
+    });
+
+    // Restore saved settings
+    const savedPlatform = this.storage.load('nopulse_platform');
+    if (savedPlatform) {
+      optPlatform.value = savedPlatform;
+      PlatformDetector.setOverride(savedPlatform);
+    }
+    const savedQuality = this.storage.load('nopulse_quality');
+    if (savedQuality && QUALITY_PRESETS[savedQuality]) {
+      optQuality.value = savedQuality;
+      this.quality = savedQuality;
+      this.gridW = QUALITY_PRESETS[this.quality].gridW;
+      this.gridH = QUALITY_PRESETS[this.quality].gridH;
+      this.raycaster = new Raycaster(this.atlas, this.gridW, this.gridH);
+    }
+    const savedSens = this.storage.load('nopulse_sens');
+    if (savedSens) { optSens.value = savedSens; this.input.setSensitivity(parseInt(savedSens, 10)); }
+    const savedVol = this.storage.load('nopulse_vol');
+    if (savedVol) { optVol.value = savedVol; this.audio.setVolume(parseInt(savedVol, 10) / 10); }
+    const savedMute = this.storage.load('nopulse_mute');
+    if (savedMute !== null) { optMute.checked = savedMute; this.audio.setMute(savedMute); }
+    const savedFps = this.storage.load('nopulse_fps');
+    if (savedFps !== null) { optFps.checked = savedFps; this.showFps = savedFps; }
+  }
+
+  _checkSavedGame() {
+    const save = this.storage.load('nopulse_save');
+    const btn = document.getElementById('btnMenuContinue');
+    if (save && save.lives > 0) {
+      btn.disabled = false;
+      btn.textContent = 'Continue run (' + (save.difficulty || 'normal') + ' · ' + save.relicsCollected + '/5 relics)';
+    } else {
+      btn.disabled = true;
+      btn.textContent = 'Continue run';
+    }
+  }
+
+  _openScreen(screenId) {
+    const screens = ['mainMenu', 'pauseMenu', 'journalPanel', 'settingsPanel', 'creditsPanel', 'termsPanel', 'deathScreen', 'endingScreen'];
+    screens.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('active');
+    });
+    if (screenId) {
+      const target = document.getElementById(screenId);
+      if (target) target.classList.add('active');
+    }
+  }
+
+  _openSettings(returnState) {
+    this._settingsReturnState = returnState || 'menu';
+    this.state = 'settings';
+    this._openScreen('settingsPanel');
+  }
+
+  _openJournal() {
+    this.state = 'journal';
+    this._populateJournal();
+    this._openScreen('journalPanel');
+  }
+
+  _populateJournal() {
+    const cont = document.getElementById('journalContent');
+    cont.innerHTML = '';
+    const unlocked = this.player ? this.player.unlockedRelics : [];
+
+    RELIC_DATA.forEach((r, idx) => {
+      const isCollected = unlocked && unlocked.includes(idx);
+      const div = document.createElement('div');
+      div.className = 'journal-entry' + (isCollected ? '' : ' locked');
+      div.innerHTML = `
+        <div class="journal-relic-title">${r.title} ${isCollected ? '✦' : '— [Locked fragment]'}</div>
+        <div class="journal-relic-body">${isCollected ? r.journalText : 'A memory buried beneath clinical static. Find the relic in the wards.'}</div>
+      `;
+      cont.appendChild(div);
+    });
+  }
+
+  _startNewRun(diffKey) {
+    this.difficulty = diffKey || 'normal';
+    this._initNewGame(false);
+    this.state = 'playing';
+    this._openScreen(null);
+    this._updateTouchUIState();
+    if (PlatformDetector.isDesktop()) {
+      this.canvas.requestPointerLock();
+    }
+  }
+
+  _loadSavedRun() {
+    const save = this.storage.load('nopulse_save');
+    if (!save || save.lives <= 0) {
+      this._startNewRun('normal');
+      return;
+    }
+    this.difficulty = save.difficulty || 'normal';
+    this._initNewGame(false);
 
 </script>
 </body>
