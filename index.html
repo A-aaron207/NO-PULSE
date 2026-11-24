@@ -778,6 +778,276 @@ class AudioSystem {
 
     osc.connect(gain);
     gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.08);
+  }
+
+  playDoorBash() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(80, t);
+    osc.frequency.exponentialRampToValueAtTime(20, t + 0.18);
+    gain.gain.setValueAtTime(0.65, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.22);
+  }
+
+  playRelicChime() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const freqs = [392.0, 493.88, 587.33, 783.99]; // G, B, D, G eerie bell
+
+    freqs.forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      const delay = idx * 0.04;
+      gain.gain.setValueAtTime(0.25, t + delay);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + delay + 1.8);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(t + delay);
+      osc.stop(t + delay + 1.9);
+    });
+  }
+
+  playSaveChime() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const freqs = [261.63, 329.63, 392.00, 523.25]; // C major calm warmth
+
+    freqs.forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = f;
+      gain.gain.setValueAtTime(0.2, t + idx * 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + idx * 0.06 + 1.6);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(t + idx * 0.06);
+      osc.stop(t + idx * 0.06 + 1.7);
+    });
+  }
+
+  playBreachAlarm() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(220, t);
+    osc.frequency.linearRampToValueAtTime(110, t + 0.4);
+    gain.gain.setValueAtTime(0.45, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.46);
+  }
+
+  playFlatline() {
+    if (!this.ctx) return;
+    if (this.flatlineOsc) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 1000.0; // Standard clinical flatline pitch
+    gain.gain.setValueAtTime(0.001, t);
+    gain.gain.linearRampToValueAtTime(0.4, t + 0.2);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    this.flatlineOsc = { osc, gain };
+  }
+
+  stopFlatline() {
+    if (this.flatlineOsc && this.ctx) {
+      try {
+        const t = this.ctx.currentTime;
+        this.flatlineOsc.gain.gain.linearRampToValueAtTime(0.0001, t + 0.3);
+        this.flatlineOsc.osc.stop(t + 0.35);
+      } catch (e) {}
+      this.flatlineOsc = null;
+    }
+  }
+}
+
+/* ============================================================
+   PROCEDURAL HOSPITAL MAP GENERATOR (BSP, 72×72)
+   ============================================================ */
+
+class HospitalGenerator {
+  constructor(size) {
+    this.size = size;
+    this.grid = null;
+    this.rooms = [];
+    this.doors = new Map();
+    this.relics = [];
+    this.saveRooms = [];
+    this.fuelPickups = [];
+    this.exitPos = null;
+    this.spawnPos = null;
+  }
+
+  generate() {
+    const sz = this.size;
+    this.grid = new Uint8Array(sz * sz);
+
+    this.rooms = [];
+    this.doors = new Map();
+
+    const leaves = [];
+    this._bspSplit({ x: 1, y: 1, w: sz - 2, h: sz - 2 }, 0, 5, leaves);
+
+    for (let i = 0; i < leaves.length; i++) {
+      this._carveRoom(leaves[i]);
+    }
+
+    this._connectRooms(leaves);
+    this._addExtraConnections();
+    this._placeDoors();
+    this._assignSpecialRooms();
+    this._scatterFuel();
+    this._ensureConnectivity();
+
+    return {
+      grid: this.grid,
+      rooms: this.rooms,
+      doors: this.doors,
+      relics: this.relics,
+      saveRooms: this.saveRooms,
+      fuelPickups: this.fuelPickups,
+      exitPos: this.exitPos,
+      spawnPos: this.spawnPos,
+    };
+  }
+
+  _rng(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  _idx(x, y) {
+    return y * this.size + x;
+  }
+
+  _bspSplit(node, depth, maxDepth, leaves) {
+    if (depth >= maxDepth || node.w < 16 || node.h < 16) {
+      leaves.push(node);
+      return;
+    }
+
+    const splitH = node.w > node.h ? false : (node.h > node.w ? true : Math.random() < 0.5);
+
+    if (splitH) {
+      if (node.h < 18) { leaves.push(node); return; }
+      const split = this._rng(node.y + 8, node.y + node.h - 9);
+      const a = { x: node.x, y: node.y, w: node.w, h: split - node.y };
+      const b = { x: node.x, y: split, w: node.w, h: node.y + node.h - split };
+      node.childA = a; node.childB = b;
+      this._bspSplit(a, depth + 1, maxDepth, leaves);
+      this._bspSplit(b, depth + 1, maxDepth, leaves);
+    } else {
+      if (node.w < 18) { leaves.push(node); return; }
+      const split = this._rng(node.x + 8, node.x + node.w - 9);
+      const a = { x: node.x, y: node.y, w: split - node.x, h: node.h };
+      const b = { x: split, y: node.y, w: node.x + node.w - split, h: node.h };
+      node.childA = a; node.childB = b;
+      this._bspSplit(a, depth + 1, maxDepth, leaves);
+      this._bspSplit(b, depth + 1, maxDepth, leaves);
+    }
+  }
+
+  _carveRoom(leaf) {
+    const pad = 2;
+    const rw = this._rng(Math.max(4, Math.floor(leaf.w * 0.5)), leaf.w - pad * 2);
+    const rh = this._rng(Math.max(4, Math.floor(leaf.h * 0.5)), leaf.h - pad * 2);
+    const rx = this._rng(leaf.x + pad, leaf.x + leaf.w - rw - pad);
+    const ry = this._rng(leaf.y + pad, leaf.y + leaf.h - rh - pad);
+
+    const room = {
+      x: rx, y: ry, w: rw, h: rh,
+      cx: Math.floor(rx + rw / 2),
+      cy: Math.floor(ry + rh / 2),
+    };
+    this.rooms.push(room);
+    leaf.room = room;
+
+    for (let y = ry; y < ry + rh; y++) {
+      for (let x = rx; x < rx + rw; x++) {
+        this.grid[this._idx(x, y)] = 1;
+      }
+    }
+  }
+
+  _getLeafRoom(leaf) {
+    if (leaf.room) return leaf.room;
+    if (leaf.childA) {
+      const r = this._getLeafRoom(leaf.childA);
+      if (r) return r;
+    }
+    if (leaf.childB) {
+      const r = this._getLeafRoom(leaf.childB);
+      if (r) return r;
+    }
+    return null;
+  }
+
+  _connectRooms(leaves) {
+    const connectNode = (node) => {
+      if (!node.childA || !node.childB) return;
+      connectNode(node.childA);
+      connectNode(node.childB);
+
+      const rA = this._getLeafRoom(node.childA);
+      const rB = this._getLeafRoom(node.childB);
+      if (rA && rB) {
+        this._carveCorridor(rA.cx, rA.cy, rB.cx, rB.cy);
+      }
+    };
+    for (let i = 0; i < leaves.length; i++) {
+      let root = leaves[i];
+      while (root.parent) root = root.parent;
+      connectNode(root);
+      break;
+    }
+    for (let i = 0; i < this.rooms.length - 1; i++) {
+      const rA = this.rooms[i];
+      const rB = this.rooms[i + 1];
+      this._carveCorridor(rA.cx, rA.cy, rB.cx, rB.cy);
+    }
+  }
+
+  _carveCorridor(x1, y1, x2, y2) {
+    const sz = this.size;
+    const carve = (x, y) => {
+      for (let dy = 0; dy <= 1; dy++) {
+        for (let dx = 0; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx > 0 && nx < sz - 1 && ny > 0 && ny < sz - 1) {
+            this.grid[this._idx(nx, ny)] = 1;
+          }
+        }
 
 </script>
 </body>
