@@ -1858,6 +1858,276 @@ class Raycaster {
       const startR = midRow - Math.floor(renderRows / 2);
 
       for (let r = 0; r < renderRows; r++) {
+        for (let c = 0; c < renderCols; c++) {
+          const col = startC + c;
+          const row = startR + r;
+          if (col < 0 || col >= gw || row < 0 || row >= gh) continue;
+          if (transformY > this.zBuffer[col]) continue;
+
+          const dithered = brightness + (BAYER_4x4[row & 3][col & 3] - 0.5) * 0.1;
+          const finalB = Math.max(0, Math.min(1, dithered));
+          if (finalB < 0.02) continue;
+
+          atlas.stamp(ctx, col * cw, row * ch, glyph, colorIdx, finalB);
+        }
+      }
+    }
+  }
+}
+
+/* ============================================================
+   INPUT MANAGER (Desktop Pointer Lock + Mobile Touch)
+   ============================================================ */
+
+class InputManager {
+  constructor(canvas, touchUI) {
+    this.canvas = canvas;
+    this.touchUI = touchUI;
+
+    this.keys = {};
+    this.mouseDX = 0;
+    this.pointerLocked = false;
+    this.sensitivity = 0.0022;
+
+    this.touchLookDX = 0;
+    this.touchMove = { x: 0, y: 0 };
+    this.touchSprint = false;
+    this.touchCrouch = false;
+    this.touchCupFlame = false;
+    this.touchInteract = false;
+    this.touchPause = false;
+
+    this._joystickTouchId = null;
+    this._joystickOriginX = 0;
+    this._joystickOriginY = 0;
+    this._joystickActive = false;
+
+    this._lookTouchId = null;
+    this._lastLookX = 0;
+
+    this._interactHoldTime = 0;
+    this._holdingInteract = false;
+
+    this._setupDesktop();
+    this._setupTouch();
+  }
+
+  setSensitivity(val1to10) {
+    this.sensitivity = 0.0008 + (val1to10 - 1) * 0.0006;
+  }
+
+  _setupDesktop() {
+    const self = this;
+
+    window.addEventListener('keydown', function(e) {
+      self.keys[e.code] = true;
+      if (e.code === 'KeyE') {
+        self._holdingInteract = true;
+      }
+    });
+
+    window.addEventListener('keyup', function(e) {
+      self.keys[e.code] = false;
+      if (e.code === 'KeyE') {
+        self._holdingInteract = false;
+      }
+    });
+
+    document.addEventListener('pointerlockchange', function() {
+      self.pointerLocked = document.pointerLockElement === self.canvas;
+    });
+
+    this.canvas.addEventListener('mousemove', function(e) {
+      if (self.pointerLocked) {
+        self.mouseDX += e.movementX;
+      }
+    });
+  }
+
+  _setupTouch() {
+    const self = this;
+    const joystickZone = document.getElementById('joystickZone');
+    const joystickBase = document.getElementById('joystickBase');
+    const joystickKnob = document.getElementById('joystickKnob');
+    const lookZone = document.getElementById('lookZone');
+
+    joystickZone.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      if (self._joystickTouchId !== null) return;
+      const touch = e.changedTouches[0];
+      self._joystickTouchId = touch.identifier;
+      self._joystickOriginX = touch.clientX;
+      self._joystickOriginY = touch.clientY;
+      self._joystickActive = true;
+
+      joystickBase.style.display = 'block';
+      joystickBase.style.left = touch.clientX + 'px';
+      joystickBase.style.top = touch.clientY + 'px';
+      joystickKnob.style.display = 'block';
+      joystickKnob.style.left = touch.clientX + 'px';
+      joystickKnob.style.top = touch.clientY + 'px';
+    }, { passive: false });
+
+    joystickZone.addEventListener('touchmove', function(e) {
+      e.preventDefault();
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        if (touch.identifier === self._joystickTouchId) {
+          const dx = touch.clientX - self._joystickOriginX;
+          const dy = touch.clientY - self._joystickOriginY;
+          const maxDist = 42;
+          const dist = Math.hypot(dx, dy);
+          const clamp = Math.min(dist, maxDist);
+          const normX = dist > 0 ? (dx / dist) * (clamp / maxDist) : 0;
+          const normY = dist > 0 ? (dy / dist) * (clamp / maxDist) : 0;
+          self.touchMove.x = normX;
+          self.touchMove.y = normY;
+
+          const knobX = self._joystickOriginX + normX * maxDist;
+          const knobY = self._joystickOriginY + normY * maxDist;
+          joystickKnob.style.left = knobX + 'px';
+          joystickKnob.style.top = knobY + 'px';
+        }
+      }
+    }, { passive: false });
+
+    const endJoystick = function(e) {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === self._joystickTouchId) {
+          self._joystickTouchId = null;
+          self._joystickActive = false;
+          self.touchMove.x = 0;
+          self.touchMove.y = 0;
+          joystickBase.style.display = 'none';
+          joystickKnob.style.display = 'none';
+        }
+      }
+    };
+    joystickZone.addEventListener('touchend', endJoystick, { passive: false });
+    joystickZone.addEventListener('touchcancel', endJoystick, { passive: false });
+
+    lookZone.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      if (self._lookTouchId !== null) return;
+      const touch = e.changedTouches[0];
+      self._lookTouchId = touch.identifier;
+      self._lastLookX = touch.clientX;
+    }, { passive: false });
+
+    lookZone.addEventListener('touchmove', function(e) {
+      e.preventDefault();
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const touch = e.changedTouches[i];
+        if (touch.identifier === self._lookTouchId) {
+          const dx = touch.clientX - self._lastLookX;
+          self.touchLookDX += dx;
+          self._lastLookX = touch.clientX;
+        }
+      }
+    }, { passive: false });
+
+    const endLook = function(e) {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === self._lookTouchId) {
+          self._lookTouchId = null;
+        }
+      }
+    };
+    lookZone.addEventListener('touchend', endLook, { passive: false });
+    lookZone.addEventListener('touchcancel', endLook, { passive: false });
+
+    const btnSprint = document.getElementById('btnSprint');
+    const btnCrouch = document.getElementById('btnCrouch');
+    const btnCupFlame = document.getElementById('btnCupFlame');
+    const btnInteract = document.getElementById('btnInteract');
+    const btnPause = document.getElementById('btnPause');
+
+    btnSprint.addEventListener('touchstart', function(e) { e.preventDefault(); self.touchSprint = !self.touchSprint; });
+    btnCrouch.addEventListener('touchstart', function(e) { e.preventDefault(); self.touchCrouch = !self.touchCrouch; });
+
+    btnCupFlame.addEventListener('touchstart', function(e) { e.preventDefault(); self.touchCupFlame = true; });
+    btnCupFlame.addEventListener('touchend', function(e) { e.preventDefault(); self.touchCupFlame = false; });
+    btnCupFlame.addEventListener('touchcancel', function(e) { e.preventDefault(); self.touchCupFlame = false; });
+
+    btnInteract.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      self.touchInteract = true;
+      self._holdingInteract = true;
+    });
+    btnInteract.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      self.touchInteract = false;
+      self._holdingInteract = false;
+    });
+    btnInteract.addEventListener('touchcancel', function(e) {
+      e.preventDefault();
+      self.touchInteract = false;
+      self._holdingInteract = false;
+    });
+
+    btnPause.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      self.touchPause = true;
+    });
+  }
+
+  getRotation() {
+    if (PlatformDetector.isTouch()) {
+      const rot = this.touchLookDX * this.sensitivity * 2.2;
+      this.touchLookDX = 0;
+      return rot;
+    }
+    const rot = this.mouseDX * this.sensitivity;
+    this.mouseDX = 0;
+    return rot;
+  }
+
+  getMovement() {
+    let fx = 0, fy = 0;
+    if (PlatformDetector.isTouch()) {
+      fx = this.touchMove.x;
+      fy = -this.touchMove.y;
+    } else {
+      if (this.keys['KeyW']) fy += 1;
+      if (this.keys['KeyS']) fy -= 1;
+      if (this.keys['KeyA']) fx -= 1;
+      if (this.keys['KeyD']) fx += 1;
+    }
+
+    if (fx !== 0 || fy !== 0) {
+      const len = Math.hypot(fx, fy);
+      if (len > 1) { fx /= len; fy /= len; }
+    }
+    return { forward: fy, strafe: fx };
+  }
+
+  isSprinting() {
+    return PlatformDetector.isTouch() ? this.touchSprint : (this.keys['ShiftLeft'] || this.keys['ShiftRight']);
+  }
+
+  isCrouching() {
+    return PlatformDetector.isTouch() ? this.touchCrouch : (this.keys['ControlLeft'] || this.keys['KeyC']);
+  }
+
+  isCupping() {
+    return PlatformDetector.isTouch() ? this.touchCupFlame : !!this.keys['Space'];
+  }
+
+  isHoldingInteract() {
+    return this._holdingInteract;
+  }
+}
+
+/* ============================================================
+   GAME ENGINE & STATE MACHINE (Living Menu, Loop, HUD)
+   ============================================================ */
+
+class Game {
+  constructor() {
+    this.canvas = document.getElementById('game');
+    this.ctx = this.canvas.getContext('2d', { alpha: false });
+    this.touchUI = document.getElementById('touchUI');
+
 
 </script>
 </body>
