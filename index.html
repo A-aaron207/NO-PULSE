@@ -258,6 +258,266 @@ const WALL_GLYPHS   = ['#', '%', '▓', '▒', '║', '│'];
 const DOOR_GLYPHS   = ['╬', '╫', '≡', '╪'];
 const FLOOR_GLYPHS  = ['~', '≈', '-', '.', ','];
 const SHADE_GLYPHS  = ['/', '\\', '|', '!', 'I', 'Y'];
+const RELIC_GLYPHS  = ['✦', '◈', '*', '+'];
+
+const ALL_GLYPHS = (function() {
+  const set = new Set();
+  for (let i = 0; i < BRIGHTNESS_RAMP.length; i++) set.add(BRIGHTNESS_RAMP[i]);
+  [WALL_GLYPHS, DOOR_GLYPHS, FLOOR_GLYPHS, SHADE_GLYPHS, RELIC_GLYPHS].forEach(arr => {
+    arr.forEach(g => set.add(g));
+  });
+  return Array.from(set);
+})();
+
+const COLORS = {
+  soot:  { r: 7,   g: 7,   b: 8   },
+  bone:  { r: 200, g: 192, b: 176  },
+  amber: { r: 245, g: 166, b: 66   },
+  teal:  { r: 63,  g: 163, b: 157  },
+};
+
+const COLOR_INDICES = { bone: 0, amber: 1, teal: 2 };
+const BRIGHTNESS_STEPS = 10;
+
+const BAYER_4x4 = [
+  [ 0/16,  8/16,  2/16, 10/16],
+  [12/16,  4/16, 14/16,  6/16],
+  [ 3/16, 11/16,  1/16,  9/16],
+  [15/16,  7/16, 13/16,  5/16],
+];
+
+const MOVE_SPEED_CROUCH  = 1.5;
+const MOVE_SPEED_WALK    = 3.0;
+const MOVE_SPEED_SPRINT  = 5.5;
+
+const PLAYER_RADIUS = 0.2;
+
+const LIGHT_DRAIN_BASE   = 0.012;
+const LIGHT_DRAIN_SPRINT = 0.035;
+const LIGHT_DRAIN_CUP    = 0.006;
+
+const FUEL_RESTORE = 0.25;
+
+const DOOR_BASH_TIME   = 3.5;
+const DOOR_BOLT_TIME   = 1.2;
+const BOLT_BASH_TIME   = 11.0;
+const SAVE_ROOM_TIME   = 25.0;
+
+/* Narrative Relic Fragments */
+const RELIC_DATA = [
+  {
+    id: 0,
+    title: "01. Intake wristband",
+    glitchLine: "Patient 74902. Admitted 02:41. Cyanotic. No pulse.",
+    journalText: "A blue plastic band, slick with sweat and disinfectant. 'Admitted: 02:41 AM. Unresponsive upon EMS arrival. Cyanotic lips. Glasgow Coma Scale 3. Immediate transfer to Resuscitation Bay 2.'",
+    art: "   [ 74902 ]\n  ===|||||===  "
+  },
+  {
+    id: 1,
+    title: "02. Defibrillator burn",
+    glitchLine: "Clear. Two hundred joules. Again.",
+    journalText: "Two circular red singes scored into the skin over the sternum and apex. The smell of scorched conductant gel. A metallic voice chanting through speaker static: 'Charged to two hundred. Stand clear.'",
+    art: "  /\\/\\____/\\\n  -- [ 200J ] --"
+  },
+  {
+    id: 2,
+    title: "03. Waiting room voices",
+    glitchLine: "Is anyone listening to me? What happened to him?",
+    journalText: "Muffled sobs through double-paned corridor glass. A trembling voice asking if there has been any change, and the calm, terrible cadence of a nurse who has given this exact response a hundred times before.",
+    art: "   .  :  |  :  .\n  (  'hold on'  )"
+  },
+  {
+    id: 3,
+    title: "04. 03:14 AM chart",
+    glitchLine: "CPR ongoing for thirty-four minutes. Pupils fixed and dilated.",
+    journalText: "A clipboard smeared with dark saline. '03:14 AM: Fourth round of Epinephrine administered. Rhythm checked: asystole. Pupils unreactive. Attending physician recommends cessation.'",
+    art: "  03:14 [ASYSTOLE]\n  ------------- "
+  },
+  {
+    id: 4,
+    title: "05. Toe tag",
+    glitchLine: "Time of pronouncement: 03:17 AM. Destination: Morgue B.",
+    journalText: "Heavy Manila cardstock stamped with indelible black ink. 'Pronounced deceased: 03:17 AM. Cause: Cardiac standstill secondary to massive trauma. Property released to county coroner.'",
+    art: "  +===========+\n  | NO  PULSE |\n  +===========+"
+  }
+];
+
+/* ============================================================
+   PLATFORM DETECTION
+   ============================================================ */
+
+const PlatformDetector = {
+  _detected: null,
+  _override: 'auto',
+
+  detect() {
+    if (this._override && this._override !== 'auto') {
+      return this._override;
+    }
+    if (this._detected) return this._detected;
+
+    const ua = navigator.userAgent || '';
+    const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+    const isElectron = !!(window && window.process && window.process.versions && window.process.versions.electron);
+    const isCapacitor = !!(window && window.Capacitor);
+    const isTauri = !!(window && window.__TAURI__);
+
+    const isDroid = /Android/i.test(ua) || isCapacitor;
+    const isWin = /Windows/i.test(ua);
+    const isLin = /Linux/i.test(ua) && !isDroid;
+
+    if (isDroid || (hasTouch && !isWin && !isLin && !isElectron)) {
+      this._detected = 'android';
+    } else if (isWin) {
+      this._detected = 'windows';
+    } else if (isLin) {
+      this._detected = 'linux';
+    } else {
+      this._detected = 'web';
+    }
+    return this._detected;
+  },
+
+  setOverride(mode) {
+    this._override = mode;
+  },
+
+  isTouch() {
+    const p = this.detect();
+    return p === 'android' || ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+  },
+
+  isDesktop() {
+    return !this.isTouch();
+  }
+};
+
+/* ============================================================
+   STORAGE ADAPTER
+   ============================================================ */
+
+class StorageAdapter {
+  constructor() {
+    this._available = this._testStorage();
+  }
+
+  _testStorage() {
+    try {
+      const k = '__np_test__';
+      localStorage.setItem(k, '1');
+      localStorage.removeItem(k);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  save(key, data) {
+    if (!this._available) return false;
+    try {
+      localStorage.setItem(key, JSON.stringify(data));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  load(key) {
+    if (!this._available) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null) return null;
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  remove(key) {
+    if (!this._available) return false;
+    try {
+      localStorage.removeItem(key);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+}
+
+/* ============================================================
+   GLYPH ATLAS (Pre-Rendered for Performance)
+   ============================================================ */
+
+class GlyphAtlas {
+  constructor(cellW, cellH, glyphs) {
+    this.cellW = cellW;
+    this.cellH = cellH;
+    this.glyphs = glyphs;
+    this.steps = BRIGHTNESS_STEPS;
+    this.numColors = 3;
+
+    this.glyphIndex = new Map();
+    for (let i = 0; i < glyphs.length; i++) {
+      this.glyphIndex.set(glyphs[i], i);
+    }
+
+    const totalCols = glyphs.length;
+    const totalRows = this.numColors * this.steps;
+
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = totalCols * cellW;
+    this.canvas.height = totalRows * cellH;
+    this.ctx = this.canvas.getContext('2d', { alpha: false });
+
+    this._build();
+  }
+
+  _build() {
+    const ctx = this.ctx;
+    const cw = this.cellW;
+    const ch = this.cellH;
+
+    ctx.fillStyle = '#070708';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    ctx.font = Math.floor(ch * 0.95) + 'px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const baseColors = [COLORS.bone, COLORS.amber, COLORS.teal];
+
+    for (let ci = 0; ci < this.numColors; ci++) {
+      const base = baseColors[ci];
+      for (let bi = 0; bi < this.steps; bi++) {
+        const factor = (bi + 1) / this.steps;
+        const r = Math.round(COLORS.soot.r + (base.r - COLORS.soot.r) * factor);
+        const g = Math.round(COLORS.soot.g + (base.g - COLORS.soot.g) * factor);
+        const b = Math.round(COLORS.soot.b + (base.b - COLORS.soot.b) * factor);
+        const colorStr = 'rgb(' + r + ',' + g + ',' + b + ')';
+
+        const row = ci * this.steps + bi;
+
+        for (let gi = 0; gi < this.glyphs.length; gi++) {
+          const col = gi;
+          const x = col * cw;
+          const y = row * ch;
+
+          ctx.fillStyle = '#070708';
+          ctx.fillRect(x, y, cw, ch);
+
+          ctx.fillStyle = colorStr;
+          ctx.fillText(this.glyphs[gi], x + cw / 2, y + ch / 2 + 1);
+        }
+      }
+    }
+  }
+
+  stamp(destCtx, destX, destY, glyphChar, colorIdx, brightness01) {
+    const gi = this.glyphIndex.get(glyphChar);
+    if (gi === undefined) return;
+
+    const bStep = Math.max(0, Math.min(this.steps - 1, Math.floor(brightness01 * this.steps)));
 
 </script>
 </body>
